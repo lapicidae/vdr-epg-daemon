@@ -12,6 +12,7 @@ EPGD_DEV=${EPGD_DEV:-"false"}
 epgdVersion=${epgdVersion:-"unknown"}
 baseIMAGE=${baseIMAGE:-"debian"}
 baseTAG=${baseTAG:-"stable-slim"}
+LANG=${LANG:-"de_DE.UTF-8"}
 
 
 ## Do not change!
@@ -155,7 +156,8 @@ sed -i 's/CONFDEST     = $(DESTDIR)\/etc\/epgd/CONFDEST     = $(DESTDIR)\/defaul
 sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
 git clone https://github.com/chriszero/epgd-plugin-tvsp.git ./PLUGINS/tvsp
-make all install
+#make all install
+make install-epgd install-epghttpd
 
 _ntfy 'get alternative eventsview'
 wget --quiet -P /defaults/config 'https://raw.githubusercontent.com/MegaV0lt/vdr-plugin-skinflatplus/master/contrib/eventsview-flatplus.sql'
