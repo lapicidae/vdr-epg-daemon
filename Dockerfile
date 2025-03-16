@@ -7,7 +7,7 @@ COPY root/ /
 
 ARG authors="A. Hemmerle <github.com/lapicidae>" \
     DEBIAN_FRONTEND="noninteractive" \
-    EPGD_DEV="false" \
+    EPGD_DEV="true" \
     inVM="true" \
     S6VER="3.2.0.2" \
     baseDIGEST \
