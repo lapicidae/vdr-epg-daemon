@@ -9,7 +9,7 @@ ARG authors="A. Hemmerle <github.com/lapicidae>" \
     DEBIAN_FRONTEND="noninteractive" \
     EPGD_DEV="true" \
     inVM="true" \
-    S6VER="3.2.0.2" \
+    S6VER="3.2.0.3" \
     baseDIGEST \
     baseIMAGE \
     baseTAG \
