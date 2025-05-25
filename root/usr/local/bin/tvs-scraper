@@ -1,0 +1,1383 @@
+#!/usr/bin/env python3
+import requests
+import requests_cache
+from datetime import datetime, timedelta, timezone
+import re
+import logging
+import json
+import argparse
+from xml.sax.saxutils import XMLGenerator
+import random
+import os
+import time
+import shutil
+import tempfile
+import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import logging.handlers
+import sqlite3
+import lxml.html
+from lxml.cssselect import CSSSelector
+
+# --- Configuration ---
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.88 Mobile Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+]
+
+logger = logging.getLogger(__name__)
+
+# --- Global/Default Variables ---
+BASE_URL = "https://m.tvspielfilm.de"
+DEFAULT_DAYS = 0
+DEFAULT_IMG_SIZE = "600"
+CHECK_IMG_DEFAULT = False
+MAX_DAYS_TO_SCRAPE = 13
+
+# Cache constants
+DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60
+DEFAULT_CACHE_SUBDIR = "tvs-cache"
+
+# Parallelization and Backoff constants
+DEFAULT_MAX_WORKERS = 5
+DEFAULT_MAX_RETRIES = 5
+RETRY_STATUS_FORCELIST = [429, 500, 502, 503, 504]
+RETRY_BACKOFF_FACTOR = 0.5
+RETRY_ON_CONNECTION_ERRORS = True
+
+DEFAULT_OUTPUT_FORMAT = 'xmltv'
+DEFAULT_SYSLOG_TAG = 'tvs-scraper'
+DEFAULT_MIN_REQUEST_DELAY = 0.1
+DEFAULT_MAX_SCHEDULE_RETRIES = 2 # New: Retries for application-level schedule generation errors
+
+
+# Compiled Regex patterns used across the script
+re_cast_entry_match = re.compile(r'(.+?)\s*\((.+?)\)')
+
+# Regex to find characters NOT allowed in XML 1.0 documents.
+# This pattern matches C0 control characters (excluding tab, newline, carriage reform),
+# DEL, C1 control characters (often from Windows-1252 misinterpretation),
+# and specific Unicode "non-characters" (FDD0-FDEF, FFFE, FFFF).
+# It does NOT remove valid XML whitespace characters (\t, \n, \r).
+_INVALID_XML_CHARS_PATTERN = re.compile(
+    '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\uFDD0-\uFDEF\uFFFE\uFFFF]'
+)
+
+def _sanitize_xml_string(text):
+    """
+    Removes characters from a string that are invalid in XML 1.0 documents.
+
+    :param text: The input string to sanitize.
+    :type text: str or None
+    :return: The sanitized string, or None if the input was None.
+    :rtype: str or None
+    """
+    if text is None:
+        return None
+    text = str(text)
+    return _INVALID_XML_CHARS_PATTERN.sub('', text)
+
+
+class TvsLeanScraper:
+    """
+    A lean web scraper for TVSpielfilm.de to extract TV program data.
+
+    This scraper uses requests and lxml.html for HTML parsing, supports
+    caching with revalidation, parallel fetching, and handles rate limiting
+    with exponential backoff.
+    """
+    def __init__(self, channel_ids=None, days=None, img_size=None, check_img=None, start_date_str=None, enable_cache=True, cache_ttl=DEFAULT_CACHE_TTL_SECONDS, cache_dir_path=None, max_workers=DEFAULT_MAX_WORKERS, clean_stale_cache=True, max_retries=DEFAULT_MAX_RETRIES, channel_ids_file=None, min_request_delay=DEFAULT_MIN_REQUEST_DELAY, max_schedule_retries=DEFAULT_MAX_SCHEDULE_RETRIES):
+        """
+        Initializes the TvsLeanScraper instance.
+
+        :param channel_ids: Comma-separated string of channel IDs to target. If None, all channels are scraped.
+        :type channel_ids: str, optional
+        :param days: Number of days to scrape, starting from `start_date`.
+        :type days: int, optional
+        :param img_size: Desired image size ("300" or "600").
+        :type img_size: str, optional
+        :param check_img: If True, performs a HEAD request to validate image URLs.
+        :type check_img: bool, optional
+        :param start_date_str: Specific date to start scraping from, in 'YYYYMMDD' format.
+        :type start_date_str: str, optional
+        :param enable_cache: If True, caching of HTTP responses is enabled.
+        :type enable_cache: bool
+        :param cache_ttl: Cache Time To Live in seconds.
+        :type cache_ttl: int
+        :param cache_dir_path: Custom directory for cache files.
+        :type cache_dir_path: str, optional
+        :param max_workers: Maximum number of concurrent workers for fetching data.
+        :type max_workers: int
+        :param clean_stale_cache: If True, expired cache files are automatically removed.
+        :type clean_stale_cache: bool
+        :param max_retries: Maximum number of retry attempts for failed HTTP requests.
+        :type max_retries: int
+        :param channel_ids_file: Path to a file containing a comma-separated list of channel IDs. If provided, this option takes precedence over --channel-ids.
+        :type channel_ids_file: str, optional
+        :param min_request_delay: Minimum delay in seconds between HTTP requests for live fetches.
+        :type min_request_delay: float
+        :param max_schedule_retries: Maximum retries for schedule parsing/generation errors.
+        :type max_schedule_retries: int
+        """
+        self.target_sourceids = None
+        if channel_ids_file:
+            try:
+                with open(channel_ids_file, 'r') as f:
+                    file_content = f.read().strip()
+                if file_content:
+                    self.target_sourceids = {cid.strip().upper() for cid in file_content.split(',') if cid.strip()}
+                    logger.info(f"Targeting specific channels from file '{channel_ids_file}': {self.target_sourceids}")
+                else:
+                    logger.warning(f"Channel IDs file '{channel_ids_file}' is empty. Crawling all found channels.")
+            except FileNotFoundError:
+                logger.error(f"Channel IDs file '{channel_ids_file}' not found. Crawling all found channels.")
+            except Exception as e:
+                logger.error(f"Error reading channel IDs from file '{channel_ids_file}': {e}. Crawling all found channels.")
+        elif channel_ids:
+            if isinstance(channel_ids, str):
+                self.target_sourceids = {cid.strip().upper() for cid in channel_ids.split(',') if cid.strip()}
+                logger.info(f"Targeting specific channels: {self.target_sourceids}")
+            else:
+                logger.warning(f"Invalid ID type for channel_ids: {type(channel_ids)}. Expected string. Crawling all found channels.")
+        else:
+            logger.info("No specific channels targeted. Crawling all found channels.")
+
+        self.start_date = None
+        if start_date_str:
+            try:
+                self.start_date = datetime.strptime(start_date_str, '%Y%m%d').date()
+                self.days_to_scrape = 1
+                logger.info(f"Scraping specific date: {self.start_date}. 'days' argument will be ignored.")
+            except ValueError:
+                logger.error(f"Invalid DATE format: {start_date_str}. Expected %Y%m%d. Using current date and 'days' argument.")
+                self.start_date = datetime.now().date()
+                self.days_to_scrape = int(days) if days is not None else DEFAULT_DAYS
+        else:
+            self.start_date = datetime.now().date()
+            self.days_to_scrape = int(days) if days is not None else DEFAULT_DAYS
+
+        if self.days_to_scrape < 1:
+            logger.info(f"DAYS value {self.days_to_scrape} is less than 1. Setting to 1 day (today).")
+            self.days_to_scrape = 1
+        elif self.days_to_scrape > MAX_DAYS_TO_SCRAPE:
+            logger.warning(f"DAYS value {self.days_to_scrape} exceeds maximum allowed ({MAX_DAYS_TO_SCRAPE}). Setting to {MAX_DAYS_TO_SCRAPE} days.")
+            self.days_to_scrape = MAX_DAYS_TO_SCRAPE
+
+        self.img_size = img_size if img_size in ["300", "600"] else DEFAULT_IMG_SIZE
+        self.check_img = bool(check_img) if check_img is not None else CHECK_IMG_DEFAULT
+
+        self.enable_cache = enable_cache
+        self.cache_ttl = cache_ttl
+        self.clean_stale_cache_enabled = clean_stale_cache 
+
+        self.cache_dir = cache_dir_path if cache_dir_path else os.path.join(tempfile.gettempdir(), DEFAULT_CACHE_SUBDIR)
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        retry_strategy = Retry(
+            total=max_retries,
+            backoff_factor=RETRY_BACKOFF_FACTOR,
+            status_forcelist=RETRY_STATUS_FORCELIST,
+            allowed_methods=["GET", "HEAD"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+
+        def should_cache(response):
+            """
+            Determines if a response should be cached based on its Content-Type header.
+            Only caches HTML content.
+
+            :param response: The HTTP response object.
+            :type response: requests.Response
+            :return: True if the response should be cached, False otherwise.
+            :rtype: bool
+            """
+            content_type = response.headers.get('Content-Type', '')
+            return 'text/html' in content_type
+
+        if self.enable_cache:
+            self.session = requests_cache.CachedSession(
+                cache_name=os.path.join(self.cache_dir, 'tvs_cache.sqlite'),
+                backend='sqlite',
+                expire_after=self.cache_ttl,
+                allowable_methods=['GET', 'HEAD'],
+                use_compression=True,
+                filter_fn=should_cache
+            )
+            logger.debug(f"Caching enabled with requests-cache (SQLite backend, compression enabled). Cache file: {os.path.join(self.cache_dir, 'tvs_cache.sqlite')}")
+        else:
+            self.session = requests.Session()
+            logger.info("Caching disabled.")
+        
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+        logger.debug(f"Main session retry strategy configured: Max retries={max_retries}, Backoff factor={RETRY_BACKOFF_FACTOR}, Retrying on status codes={RETRY_STATUS_FORCELIST}.")
+
+        self.max_workers = max_workers
+        self.min_request_delay = min_request_delay
+        self.max_schedule_retries = max_schedule_retries # New: Store max schedule retries
+
+        # Compiled Regex patterns
+        self.re_source_id_html = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
+        self.re_image_url_match = re.compile(r"url\(['\"]?(.*?)['\"]?\)")
+        self.re_image_base_path_match = re.compile(r'(.*?)_(\d+)\.jpg$')
+        self.re_log_item_id_cleanup = re.compile(r'[^a-zA-Z0-9]')
+        self.re_genre_pipe_match = re.compile(r'\|\s*(.*)')
+        self.re_duration_minutes_match = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
+        self.re_fsk_match = re.compile(r'(\d+)')
+        self.re_rating_class_match = re.compile(r'rating-(\d+)')
+
+        # Pre-compiled CSS Selectors for lxml for performance.
+        # These selectors target specific elements on TVSpielfilm.de mobile pages.
+        # Each selector's name generally indicates its purpose (e.g., selector_sender_links).
+        self.selector_sender_links = CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
+        self.selector_li_elements = CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
+        self.selector_title_tag = CSSSelector('strong.tv-tip-heading span.title')
+        self.selector_detail_link_tag = CSSSelector('div.image-text-holder a.flex-row.js-track-link')
+        self.selector_image_div = CSSSelector('div.program-image div.default-image')
+        self.selector_description_section = CSSSelector('section.broadcast-detail__description')
+        self.selector_short_desc_tag = CSSSelector('p.headline')
+        self.selector_long_desc_paragraphs = CSSSelector('p:not(.headline)')
+        self.selector_genre_underline_tag = CSSSelector('div.stage-underline.gray span.text-row')
+        self.selector_infos_container = CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_genre_dt_infos = CSSSelector('dt')
+        self.selector_genre_tag_general = CSSSelector('div.genre-info span.genre-text')
+        self.selector_genre_time_tag_schedule = CSSSelector('div.genre span.genre-time')
+        self.selector_infos_dl = CSSSelector('dl')
+        self.selector_infos_dt = CSSSelector('dt')
+        self.selector_infos_dd = CSSSelector('dd')
+        self.selector_headline_infos = CSSSelector('p.headline')
+        self.selector_headline_cast = CSSSelector('p.headline')
+        self.selector_headline_crew = CSSSelector('p.headline')
+        self.selector_cast_container = CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_cast_dl = CSSSelector('dl')
+        self.selector_cast_dt = CSSSelector('dt')
+        self.selector_crew_container = CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_crew_dl = CSSSelector('dl')
+        self.selector_crew_dt = CSSSelector('dt')
+        self.selector_crew_dd = CSSSelector('dd')
+        self.selector_content_rating_section = CSSSelector('section.content-rating')
+        self.selector_num_rating_div = CSSSelector('div.content-rating__rating-genre__thumb')
+        self.selector_txt_rating_tag = CSSSelector('blockquote.content-rating__rating-genre__conclusion-quote p')
+        self.selector_rating_list_items = CSSSelector('ul.content-rating__rating-genre__list li.content-rating__rating-genre__list-item')
+        self.selector_rating_label = CSSSelector('span.content-rating__rating-genre__list-item__label')
+        self.selector_rating_span = CSSSelector('span.content-rating__rating-genre__list-item__rating')
+        self.selector_imdb_rating_tag = CSSSelector('div.content-rating__imdb-rating__rating-value')
+
+
+    def _build_schedule_url(self, channel_url, current_date):
+        """
+        Constructs the schedule URL for a given channel and date.
+
+        :param channel_url: Base URL of the channel.
+        :type channel_url: str
+        :param current_date: The date for which to build the schedule URL.
+        :type current_date: datetime.date
+        :return: The complete schedule URL.
+        :rtype: str
+        """
+        date_str = current_date.strftime('%Y-%m-%d')
+        return f"{channel_url}?date={date_str}"
+
+    def _get_formatted_image_url(self, image_base_path, img_size):
+        """
+        Constructs the full image URL based on the base path and desired size.
+
+        :param image_base_path: The base path of the image without size or extension.
+        :type image_base_path: str
+        :param img_size: The desired image size ("300" or "600").
+        :type img_size: str
+        :return: The formatted image URL, or None if `image_base_path` is None.
+        :rtype: str or None
+        """
+        if image_base_path:
+            return f"{image_base_path}_{img_size}.jpg"
+        return None
+
+    def fetch_url(self, url, allow_redirects=True):
+        """
+        Sends an HTTP GET request to the given URL using the configured session.
+
+        Handles HTTP status codes, timeouts, and retries. Applies a delay only for
+        live (non-cached) requests to be polite.
+
+        :param url: The URL to fetch.
+        :type url: str
+        :param allow_redirects: Whether to follow HTTP redirects. Defaults to True.
+        :type allow_redirects: bool
+        :return: The response object if successful, None otherwise.
+        :rtype: requests.Response or None
+        """
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+
+        # Outer loop for retrying after a cache corruption error
+        for _ in range(2): # Try once, and once more if cache is corrupted
+            try:
+                response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
+                response.raise_for_status()
+
+                if response.from_cache:
+                    logger.debug(f"Served from cache: {url}")
+                elif response.status_code == 304:
+                    logger.debug(f"Resource {url} not modified. Using cached content (requests-cache handled 304).")
+                    time.sleep(0.05)
+                else:
+                    logger.debug(f"Fetched live: {url}")
+                    time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
+                
+                return response
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    logger.warning(f"HTTP Error 404: {url} - {e.response.reason}")
+                elif e.response.status_code == 403:
+                    logger.warning(f"HTTP Error 403 (Forbidden): {url} - {e.response.reason}")
+                else:
+                    logger.error(f"HTTP Error for {url} after retries: {e}")
+                return None
+            except requests.exceptions.Timeout as e:
+                logger.error(f"Request Timeout for {url} after retries: {e}")
+                return None
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"Connection Error for {url} after retries: {e}")
+                return None
+            except (EOFError, sqlite3.InterfaceError) as e: # Catch specific cache corruption errors
+                logger.warning(f"Cache corruption detected for {url}: {e}. Clearing entry and retrying fetch.")
+                try:
+                    self.session.cache.delete(url) # Delete the corrupted entry
+                    logger.info(f"Cleared corrupted cache entry for: {url}")
+                except Exception as cache_del_exc:
+                    logger.error(f"Failed to delete corrupted cache entry for {url}: {cache_del_exc}")
+                # Loop will retry the fetch. If it fails again, it will exit the loop.
+                time.sleep(0.1) # Small delay before immediate retry to avoid hammering
+            except requests.exceptions.RequestException as e:
+                logger.error(f"An unexpected RequestException occurred for {url}: {e}")
+                return None
+        
+        logger.error(f"Failed to fetch {url} after retrying due to cache corruption.")
+        return None # Return None if both attempts fail
+
+    def parse_sender_list(self, html_content):
+        """
+        Parses the list of channels from the main sender page (m.tvspielfilm.de/sender/)
+        using lxml.html and cssselect.
+
+        :param html_content: The HTML content of the sender list page.
+        :type html_content: str
+        :return: A list of dictionaries, each containing 'name', 'url', and 'source_id' for a channel.
+        :rtype: list[dict]
+        """
+        root = lxml.html.fromstring(html_content)
+        sender_links = self.selector_sender_links(root)
+        logger.debug(f"Found {len(sender_links)} potential sender links.")
+
+        channel_data = []
+        for link in sender_links:
+            href = link.get('href')
+            name = link.text_content().strip()
+            
+            source_id = None
+            source_id_match = self.re_source_id_html.search(href)
+            if source_id_match:
+                source_id = source_id_match.group(1).upper()
+            
+            if not source_id:
+                tracking_data_str = link.get('data-tracking-point')
+                if tracking_data_str:
+                    try:
+                        tracking_data = json.loads(tracking_data_str)
+                        if 'channel' in tracking_data:
+                            source_id = tracking_data['channel'].upper()
+                    except json.JSONDecodeError:
+                        logger.debug(f"Could not parse data-tracking-point for {name}: {tracking_data_str}")
+
+            if source_id:
+                logger.debug(f"Processing channel: {name} (ID: {source_id}, Href: {href})")
+                if self.target_sourceids and source_id not in self.target_sourceids:
+                    logger.debug(f"Skipping {name} ({source_id}) as it's not in target_sourceids.")
+                    continue
+
+                channel_data.append({
+                    'name': name,
+                    'url': href,
+                    'source_id': source_id
+                })
+            else:
+                logger.warning(f"Could not extract source_id for channel: {name} (Href: {href}). Skipping.")
+        
+        logger.debug(f"Final channel_data list contains {len(channel_data)} channels after filtering.")
+        return channel_data
+
+    def parse_channel_schedule(self, html_content, channel_name, channel_url, channel_source_id, current_date):
+        """
+        Parses the schedule for a single channel and a specific date using lxml.html and cssselect.
+
+        :param html_content: The HTML content of the channel's schedule page.
+        :type html_content: str
+        :param channel_name: The name of the channel.
+        :type channel_name: str
+        :param channel_url: The URL of the channel.
+        :type channel_url: str
+        :param channel_source_id: The source ID of the channel.
+        :type channel_source_id: str
+        :param current_date: The date for which the schedule is being parsed.
+        :type current_date: datetime.date
+        :return: A list of dictionaries, each representing a program item.
+        :rtype: list[dict]
+        """
+        root = lxml.html.fromstring(html_content)
+        extracted_items = []
+
+        for li_element in self.selector_li_elements(root):
+            item_data = {}
+
+            item_data['type'] = 'program'
+            item_data['channelname'] = channel_name
+            item_data['sourceid'] = channel_source_id
+            item_data['date'] = current_date.strftime('%Y-%m-%d')
+
+            item_data['starttime'] = li_element.get('data-start-time')
+            item_data['endtime'] = li_element.get('data-end-time')
+
+            title_tag = self.selector_title_tag(li_element)
+            if title_tag:
+                item_data['title'] = title_tag[0].text_content().strip()
+            else:
+                item_data['title'] = None
+
+            detail_link_tag = self.selector_detail_link_tag(li_element)
+            if detail_link_tag:
+                detail_href = detail_link_tag[0].get('href')
+                if detail_href:
+                    if not detail_href.startswith('http'):
+                        item_data['link'] = f"{BASE_URL}{detail_href}"
+                    else:
+                        item_data['link'] = detail_href
+            else:
+                item_data['link'] = None
+
+            item_data['eventid'] = li_element.get('data-id')
+
+            image_div = self.selector_image_div(li_element)
+            if image_div:
+                style_attr = image_div[0].get('style')
+                if style_attr:
+                    image_url_match = self.re_image_url_match.search(style_attr)
+                    if image_url_match:
+                        original_full_image_url = image_url_match.group(1)
+                        base_image_url_match = self.re_image_base_path_match.match(original_full_image_url)
+                        if base_image_url_match:
+                            item_data['image_base_path'] = base_image_url_match.group(1)
+                        else:
+                            item_data['image_base_path'] = None
+
+                        item_data['image_url'] = self._get_formatted_image_url(item_data['image_base_path'], self.img_size) or original_full_image_url
+                    else:
+                        item_data['image_base_path'] = None
+                        item_data['image_url'] = None
+                else:
+                    item_data['image_base_path'] = None
+                    item_data['image_url'] = None
+            else:
+                item_data['image_base_path'] = None
+                item_data['image_url'] = None
+
+            if self.check_img and item_data['image_url']:
+                orig_img = item_data['image_url']
+                item_id_for_log = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
+                logger.debug(f"CHECK_IMG ENABLED for item {item_id_for_log}. Scheduling check for: {item_data['image_url']}")
+                item_data['image_url'] = self.check_image_url(item_data['image_url'], orig_img, item_id_for_log)
+            else:
+                item_id_for_log = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
+                logger.debug(f"CHECK_IMG DISABLED or no image URL for item {item_id_for_log}. Yielding item directly.")
+            
+            if item_data['link']:
+                detail_page_data = self.parse_detail_page(item_data['link'])
+                item_data.update(detail_page_data)
+            else:
+                logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
+                item_data.update({
+                    'shortdescription': None, 'longdescription': None, 'genre': None,
+                    'original_title': None, 'country': None, 'year': None, 'duration': None,
+                    'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+                    'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+                    'imdbrating': None
+                })
+
+            extracted_items.append(item_data)
+        return extracted_items
+
+    def parse_detail_page(self, detail_url):
+        """
+        Parses the detail page of a program to extract additional information
+        using lxml.html and cssselect.
+
+        :param detail_url: The URL of the program's detail page.
+        :type detail_url: str
+        :return: A dictionary containing detailed program information.
+        :rtype: dict
+        """
+        detail_data = {
+            'shortdescription': None, 'longdescription': None, 'genre': None,
+            'original_title': None, 'country': None, 'year': None, 'duration': None,
+            'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+            'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+            'imdbrating': None
+        }
+        response = self.fetch_url(detail_url)
+
+        if not response:
+            logger.warning(f"Failed to fetch detail page: {detail_url}. Skipping detail data extraction.")
+            return detail_data
+
+        root = lxml.html.fromstring(response.content)
+
+        description_section = self.selector_description_section(root)
+        if description_section:
+            short_desc_tag = self.selector_short_desc_tag(description_section[0])
+            if short_desc_tag:
+                detail_data['shortdescription'] = short_desc_tag[0].text_content().strip()
+
+            long_desc_paragraphs = self.selector_long_desc_paragraphs(description_section[0])
+            if long_desc_paragraphs:
+                detail_data['longdescription'] = "\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()])
+
+        genre_underline_tag = self.selector_genre_underline_tag(root)
+        if genre_underline_tag:
+            genre_text = genre_underline_tag[0].text_content().strip()
+            genre_match = self.re_genre_pipe_match.search(genre_text)
+            if genre_match:
+                detail_data['genre'] = genre_match.group(1).strip()
+            else:
+                detail_data['genre'] = genre_text.strip()
+        
+        if not detail_data['genre']:
+            all_infos_containers = self.selector_infos_container(root)
+            for infos_container_elem in all_infos_containers:
+                headline_p_elements = self.selector_headline_infos(infos_container_elem)
+                if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
+                    for dt_element in self.selector_infos_dt(infos_container_elem):
+                        if dt_element.text_content().strip() == "Genre":
+                            genre_dd = dt_element.getnext()
+                            if genre_dd:
+                                detail_data['genre'] = genre_dd.text_content().strip()
+                                break
+                if detail_data['genre']:
+                    break
+        
+        if not detail_data['genre']:
+            genre_tag_general = self.selector_genre_tag_general(root)
+            if genre_tag_general:
+                detail_data['genre'] = genre_tag_general[0].text_content().strip()
+            else:
+                genre_time_tag_schedule = self.selector_genre_time_tag_schedule(root)
+                if genre_time_tag_schedule:
+                    genre_match = self.re_genre_pipe_match.search(genre_time_tag_schedule[0].text_content().strip())
+                    if genre_match:
+                        detail_data['genre'] = genre_match.group(1).strip()
+                    else:
+                        detail_data['genre'] = genre_time_tag_schedule[0].text_content().strip()
+
+        all_infos_containers = self.selector_infos_container(root)
+        for infos_container_elem in all_infos_containers:
+            headline_p_elements = self.selector_headline_infos(infos_container_elem)
+            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
+                infos_dl = self.selector_infos_dl(infos_container_elem)
+                if infos_dl:
+                    dt_elements = self.selector_infos_dt(infos_dl[0])
+                    dd_elements = self.selector_infos_dd(infos_dl[0])
+                    for dt, dd in zip(dt_elements, dd_elements):
+                        dt_text = dt.text_content().strip()
+                        dd_text = dd.text_content().strip()
+                        if dt_text == 'Originaltitel':
+                            detail_data['original_title'] = dd_text
+                        elif dt_text == 'Land':
+                            detail_data['country'] = dd_text
+                        elif dt_text == 'Jahr':
+                            try:
+                                detail_data['year'] = int(dd_text)
+                            except ValueError:
+                                pass
+                        elif dt_text == 'Länge':
+                            duration_minutes_match = self.re_duration_minutes_match.search(dd_text)
+                            if duration_minutes_match:
+                                detail_data['duration'] = int(duration_minutes_match.group(1)) * 60
+                        elif dt_text == 'FSK':
+                            fsk_match = self.re_fsk_match.search(dd_text)
+                            if fsk_match:
+                                try:
+                                    detail_data['parentalrating'] = int(fsk_match.group(1))
+                                except ValueError:
+                                    pass
+                break
+
+        all_cast_containers = self.selector_cast_container(root)
+        for cast_container_elem in all_cast_containers:
+            headline_p_elements = self.selector_headline_cast(cast_container_elem)
+            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Cast":
+                cast_list = []
+                cast_dl = self.selector_cast_dl(cast_container_elem)
+                if cast_dl:
+                    for dt_tag in self.selector_cast_dt(cast_dl[0]):
+                        role = dt_tag.text_content().strip()
+                        actor_dd_tag = dt_tag.getnext()
+                        if actor_dd_tag is not None:
+                            actor_name = actor_dd_tag.text_content().strip()
+                            if actor_name:
+                                cast_list.append(f"{actor_name} ({role})" if role else actor_name)
+                detail_data['cast'] = ", ".join(cast_list) if cast_list else None
+                break
+
+        all_crew_containers = self.selector_crew_container(root)
+        for crew_container_elem in all_crew_containers:
+            headline_p_elements = self.selector_headline_crew(crew_container_elem)
+            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Crew":
+                crew_dl = self.selector_crew_dl(crew_container_elem)
+                if crew_dl:
+                    dt_elements = self.selector_crew_dt(crew_dl[0])
+                    dd_elements = self.selector_crew_dd(crew_dl[0])
+                    for dt, dd in zip(dt_elements, dd_elements):
+                        dt_text = dt.text_content().strip()
+                        dd_text = dd.text_content().strip()
+                        if dt_text == 'Regie':
+                            detail_data['director'] = dd_text
+                        elif dt_text == 'Drehbuch':
+                            detail_data['screenplay'] = f"{detail_data['screenplay']}, {dd_text}" if detail_data['screenplay'] else dd_text
+                        elif dt_text == 'Kamera':
+                            detail_data['camera'] = dd_text
+                break
+
+        content_rating_section = self.selector_content_rating_section(root)
+        if content_rating_section:
+            num_rating_div = self.selector_num_rating_div(content_rating_section[0])
+            if num_rating_div:
+                class_attr = num_rating_div[0].get('class', '').split()
+                rating_class_match = self.re_rating_class_match.search(' '.join(class_attr))
+                if rating_class_match:
+                    try:
+                        detail_data['numrating'] = int(rating_class_match.group(1))
+                    except ValueError:
+                        logger.warning(f"Could not convert numrating class '{rating_class_match.group(1)}' to integer.")
+            
+            txt_rating_tag = self.selector_txt_rating_tag(content_rating_section[0])
+            if txt_rating_tag:
+                detail_data['txtrating'] = txt_rating_tag[0].text_content().strip()
+
+            rating_list_items = self.selector_rating_list_items(content_rating_section[0])
+            if rating_list_items:
+                ratings_parts = []
+                for item in rating_list_items:
+                    label = self.selector_rating_label(item)
+                    rating_span = self.selector_rating_span(item)
+                    if label and rating_span:
+                        rating_class_match = self.re_rating_class_match.search(' '.join(rating_span[0].get('class', '').split()))
+                        if rating_class_match:
+                            num_dots = int(rating_class_match.group(1))
+                            stars = '*' * num_dots
+                            ratings_parts.append(f"{label[0].text_content().strip()} {stars}")
+                if ratings_parts:
+                    detail_data['rating'] = " / ".join(ratings_parts)
+
+            imdb_rating_tag = self.selector_imdb_rating_tag(content_rating_section[0])
+            if imdb_rating_tag:
+                detail_data['imdbrating'] = imdb_rating_tag[0].text_content().strip()
+
+        return detail_data
+
+    def check_image_url(self, url, original_image_url, item_key):
+        """
+        Checks the status of an image URL by performing a HEAD request using the main session.
+
+        The `filter_fn` on the main session ensures that image responses are not cached.
+
+        :param url: The URL of the image to check.
+        :type url: str
+        :param original_image_url: The original image URL to fall back to if the check fails.
+        :type original_image_url: str
+        :param item_key: A unique identifier for the program item for logging purposes.
+        :type item_key: str
+        :return: The validated image URL or the original URL if validation fails.
+        :rtype: str
+        """
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+
+        try:
+            response = self.session.head(url, headers=headers, allow_redirects=True, timeout=10)
+            response.raise_for_status()
+
+            if response.status_code == 200:
+                final_image_url = response.url
+                logger.debug(f"Item {item_key} - Image URL check successful ({response.status_code}). Using URL: {final_image_url}")
+            else:
+                logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
+                final_image_url = original_image_url
+
+        except requests.exceptions.HTTPError as e:
+            logger.warning(f"Item {item_key} - Image URL check failed (HTTP Error {e.response.status_code}) for {url}: {e}. Falling back to original URL: {original_image_url}")
+            final_image_url = original_image_url
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"Item {item_key} - Image URL check timed out for {url}: {e}. Falling back to original URL: {original_image_url}")
+            final_image_url = original_image_url
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"Item {item_key} - Image URL connection error for {url}: {e}. Falling back to original URL: {original_image_url}")
+            final_image_url = original_image_url
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Item {item_key} - Image URL check failed with unexpected exception for {url}: {e}. Falling back to original URL: {original_image_url}")
+            final_image_url = original_image_url
+        
+        return final_image_url
+
+    def _process_channel_day_schedule(self, channel_info, current_date, channel_num, total_channels):
+        """
+        Helper method to fetch and parse a day's schedule for a channel, with retry logic for
+        application-level exceptions during schedule parsing.
+
+        :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
+        :type channel_info: dict
+        :param current_date: The date for which to process the schedule.
+        :type current_date: datetime.date
+        :param channel_num: The current channel number (1-based index).
+        :type channel_num: int
+        :param total_channels: The total number of channels being processed.
+        :type total_channels: int
+        :return: A list of extracted program items for the given channel and date.
+        :rtype: list[dict]
+        """
+        channel_name = channel_info['name']
+        channel_url = channel_info['url']
+        channel_source_id = channel_info['source_id']
+
+        schedule_url = self._build_schedule_url(channel_url, current_date)
+
+        for attempt in range(self.max_schedule_retries + 1):
+            try:
+                # Conditionally add "Attempt X/Y" to the log message
+                attempt_str = f" (Attempt {attempt + 1}/{self.max_schedule_retries + 1})" if attempt > 0 else ""
+                logger.info(f"Fetching schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
+                schedule_response = self.fetch_url(schedule_url)
+
+                if schedule_response:
+                    return self.parse_channel_schedule(
+                        schedule_response.content,
+                        channel_name,
+                        channel_url,
+                        channel_source_id,
+                        current_date
+                    )
+                else:
+                    # If fetch_url returns None, it means an HTTP/network error occurred and was handled/logged there.
+                    # We should not retry application logic if the fetch itself failed.
+                    logger.warning(f"Failed to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} after HTTP retries. Skipping application-level retries.")
+                    return []
+            except Exception as exc:
+                logger.exception(f"Schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')} generated an exception on attempt {attempt + 1}: {exc}")
+                if attempt < self.max_schedule_retries:
+                    # Implement a small delay before retrying application logic
+                    time.sleep(1 * (attempt + 1)) # Linear backoff for simplicity
+                else:
+                    logger.error(f"Max retries ({self.max_schedule_retries}) exhausted for schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Skipping this day.")
+                    return []
+        return [] # Should not be reached, but ensures a return value
+
+    def run_scraper(self):
+        """
+        Orchestrates the main scraping process.
+
+        Fetches the list of channels, then concurrently scrapes the schedule
+        for each channel for the specified number of days.
+
+        :return: A list of all extracted program items.
+        :rtype: list[dict]
+        """
+        logger.info("Starting scrape process...")
+        initial_response = self.fetch_url(f"{BASE_URL}/sender/")
+
+        if not initial_response:
+            logger.error("Failed to fetch initial sender list page. Exiting.")
+            return []
+
+        channel_list = self.parse_sender_list(initial_response.content)
+
+        if not channel_list:
+            logger.warning("No channels found or specified. Exiting.")
+            return []
+
+        total_channels = len(channel_list)
+        tasks = []
+        for i, channel in enumerate(channel_list):
+            channel_num = i + 1
+            # Consolidated log message to appear once per channel
+            logger.info(f"Processing channel: {channel['name']} (ID: {channel['source_id']}) [{channel_num}/{total_channels}] for {self.days_to_scrape} day(s).")
+            for j in range(self.days_to_scrape):
+                current_date = self.start_date + timedelta(days=j)
+                tasks.append((channel, current_date, channel_num, total_channels))
+
+        all_extracted_items = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_task = {executor.submit(self._process_channel_day_schedule, channel, date, channel_num, total_channels): (channel, date, channel_num, total_channels)
+                                for channel, date, channel_num, total_channels in tasks}
+
+            for future in concurrent.futures.as_completed(future_to_task):
+                channel_info, current_date, channel_num, total_channels = future_to_task[future]
+                try:
+                    items_for_day = future.result()
+                    all_extracted_items.extend(items_for_day)
+                    logger.info(f"Finished processing items for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}. Extracted {len(items_for_day)} items.")
+                except Exception as exc:
+                    # This outer catch should ideally not be hit if _process_channel_day_schedule handles retries.
+                    # It's a safeguard for unhandled exceptions from the future.result() call itself.
+                    logger.exception(f"An unhandled exception occurred for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}: {exc}")
+
+        logger.info(f"Scraping completed. Total items extracted: {len(all_extracted_items)}")
+        
+        if self.enable_cache and self.clean_stale_cache_enabled:
+            logger.debug("Removing expired cache entries and vacuuming SQLite database...")
+            try:
+                self.session.cache.delete(expired=True)
+                
+                cache_db_path = os.path.join(self.cache_dir, 'tvs_cache.sqlite')
+                if os.path.exists(cache_db_path):
+                    conn = sqlite3.connect(cache_db_path)
+                    conn.execute('VACUUM;')
+                    conn.close()
+                    logger.debug("SQLite database vacuumed successfully.")
+                else:
+                    logger.warning(f"SQLite cache database not found at {cache_db_path}. Skipping vacuum.")
+            except Exception as e:
+                logger.error(f"Error during cache cleanup or vacuuming: {e}")
+            logger.debug("Cache cleanup and vacuuming process completed.")
+
+        return all_extracted_items
+
+# --- Helper functions for XMLTV generation ---
+def _convert_unix_to_xmltv_time(unix_timestamp_str):
+    """
+    Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
+
+    :param unix_timestamp_str: Unix timestamp as a string.
+    :type unix_timestamp_str: str
+    :return: XMLTV formatted time string, or None if conversion fails.
+    :rtype: str or None
+    """
+    if not unix_timestamp_str:
+        logger.warning("Empty or None Unix timestamp string received.")
+        return None
+    try:
+        unix_timestamp = int(unix_timestamp_str)
+        
+        if unix_timestamp < 946684800:
+            logger.warning(f"Unrealistically old Unix timestamp '{unix_timestamp_str}' for XMLTV conversion received. Skipping.")
+            return None
+
+        dt_object = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+        
+        return dt_object.strftime('%Y%m%d%H%M%S +0000')
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Could not convert Unix timestamp '{unix_timestamp_str}' to XMLTV time: {e}")
+        return None
+
+def generate_xmltv(data_list, output_file):
+    """
+    Generates an XMLTV-compliant XML file from the scraped data
+    using xml.sax.saxutils.XMLGenerator for streaming output.
+    Applies XML character sanitation to all string content.
+
+    :param data_list: A list of dictionaries, each representing a program item.
+    :type data_list: list[dict]
+    :param output_file: The path to the output XMLTV file.
+    :type output_file: str
+    """
+    logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator for streaming")
+
+    channels = {}
+    for item in data_list:
+        sourceid = item.get('sourceid')
+        channelname = item.get('channelname')
+        if sourceid and sourceid not in channels:
+            channels[sourceid] = {'name': _sanitize_xml_string(channelname)}
+
+    if not data_list:
+        logger.warning("No program data to generate XMLTV. Output file will not be created.")
+        return
+
+    with open(output_file, 'wb') as f:
+        handler = XMLGenerator(f, encoding='utf-8')
+
+        f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
+
+        handler.startElement('tv', {
+            'date': datetime.now().strftime('%Y%m%d%H%M%S %z').replace(' ', ''),
+            'source-info-name': _sanitize_xml_string('TVSpielfilm.de'),
+            'source-info-url': _sanitize_xml_string('https://m.tvspielfilm.de/'),
+            'generator-info-name': _sanitize_xml_string('TVSpielfilm-Scraper/1.0')
+        })
+        f.write(b'\n')
+
+        for sourceid, channel_info in sorted(channels.items()):
+            robust_channel_id = f"{_sanitize_xml_string(sourceid.lower())}.tvs"
+            handler.startElement('channel', {'id': robust_channel_id})
+            f.write(b'\n  ')
+            handler.startElement('display-name', {})
+            handler.characters(_sanitize_xml_string(channel_info['name']))
+            handler.endElement('display-name')
+            f.write(b'\n')
+            handler.endElement('channel')
+            f.write(b'\n')
+
+        for item in data_list:
+            start_time_xmltv = _convert_unix_to_xmltv_time(item.get('starttime'))
+            stop_time_xmltv = _convert_unix_to_xmltv_time(item.get('endtime'))
+
+            if not start_time_xmltv or not item.get('sourceid') or not item.get('title'):
+                logger.warning(f"Skipping program due to missing essential data (buffered): {item.get('title', 'N/A')} on {item.get('channelname', 'N/A')}")
+                continue
+
+            robust_channel_id = f"{_sanitize_xml_string(item['sourceid'].lower())}.tvs"
+            programme_attrib = {
+                'start': start_time_xmltv,
+                'channel': robust_channel_id
+            }
+            if stop_time_xmltv:
+                programme_attrib['stop'] = stop_time_xmltv
+
+            handler.startElement('programme', programme_attrib)
+            f.write(b'  ')
+
+            handler.startElement('title', {})
+            handler.characters(_sanitize_xml_string(item['title']))
+            handler.endElement('title')
+            f.write(b'\n    ')
+
+            full_description = []
+            if item.get('shortdescription'):
+                full_description.append(_sanitize_xml_string(item['shortdescription']))
+            if item.get('longdescription'):
+                full_description.append(_sanitize_xml_string(item['longdescription']))
+            if full_description:
+                handler.startElement('desc', {})
+                handler.characters('\n'.join(full_description))
+                handler.endElement('desc')
+                f.write(b'\n    ')
+
+            if item.get('director') or item.get('cast') or item.get('screenplay'):
+                handler.startElement('credits', {})
+                f.write(b'\n      ')
+                if item.get('director'):
+                    handler.startElement('director', {})
+                    handler.characters(_sanitize_xml_string(item['director']))
+                    handler.endElement('director')
+                    f.write(b'\n      ')
+                
+                if item.get('cast'):
+                    cast_entries = [c.strip() for c in item['cast'].split(',')]
+                    for entry in cast_entries:
+                        match = re_cast_entry_match.match(entry)
+                        if match:
+                            actor_name = _sanitize_xml_string(match.group(1).strip())
+                            actor_role = _sanitize_xml_string(match.group(2).strip())
+                            handler.startElement('actor', {'role': actor_role})
+                            handler.characters(actor_name)
+                            handler.endElement('actor')
+                        else:
+                            handler.startElement('actor', {})
+                            handler.characters(_sanitize_xml_string(entry))
+                            handler.endElement('actor')
+                        f.write(b'\n      ')
+
+                if item.get('screenplay'):
+                    writers = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
+                    for writer in writers:
+                        handler.startElement('writer', {})
+                        handler.characters(_sanitize_xml_string(writer))
+                        handler.endElement('writer')
+                        f.write(b'\n      ')
+                
+                handler.endElement('credits')
+                f.write(b'\n    ')
+
+            if item.get('year'):
+                handler.startElement('date', {})
+                handler.characters(str(item['year']))
+                handler.endElement('date')
+                f.write(b'\n    ')
+
+            if item.get('genre'):
+                categories = [c.strip() for c in item['genre'].split(',') if c.strip()]
+                for category in categories:
+                    handler.startElement('category', {})
+                    handler.characters(_sanitize_xml_string(category))
+                    handler.endElement('category')
+                    f.write(b'\n    ')
+
+            if item.get('duration') is not None:
+                length_minutes = round(item['duration'] / 60)
+                handler.startElement('length', {'units': 'minutes'})
+                handler.characters(str(length_minutes))
+                handler.endElement('length')
+                f.write(b'\n    ')
+
+            if item.get('link'):
+                handler.startElement('url', {})
+                handler.characters(_sanitize_xml_string(item['link']))
+                handler.endElement('url')
+                f.write(b'\n    ')
+
+            if item.get('country'):
+                handler.startElement('country', {})
+                handler.characters(_sanitize_xml_string(item['country']))
+                handler.endElement('country')
+                f.write(b'\n    ')
+
+            if item.get('parentalrating') is not None:
+                handler.startElement('rating', {'system': 'FSK'})
+                f.write(b'\n      ')
+                handler.startElement('value', {})
+                handler.characters(str(item['parentalrating']))
+                handler.endElement('value')
+                f.write(b'\n    ')
+                handler.endElement('rating')
+                f.write(b'\n    ')
+
+            if item.get('numrating') is not None:
+                handler.startElement('star-rating', {'system': 'TVSpielfilm'})
+                f.write(b'\n      ')
+                handler.startElement('value', {})
+                handler.characters(_sanitize_xml_string(f"{item['numrating']} / 3"))
+                handler.endElement('value')
+                f.write(b'\n    ')
+                handler.endElement('star-rating')
+                f.write(b'\n    ')
+            
+            if item.get('imdbrating'):
+                handler.startElement('star-rating', {'system': 'IMDB'})
+                f.write(b'\n      ')
+                handler.startElement('value', {})
+                handler.characters(_sanitize_xml_string(f"{item['imdbrating']} / 10"))
+                handler.endElement('value')
+                f.write(b'\n    ')
+                handler.endElement('star-rating')
+                f.write(b'\n    ')
+
+            if item.get('txtrating'):
+                handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Editorial'})
+                handler.characters(_sanitize_xml_string(item['txtrating']))
+                handler.endElement('review')
+                f.write(b'\n    ')
+            
+            if item.get('rating'):
+                original_rating_string = item['rating']
+                parts = [p.strip() for p in original_rating_string.split('/')]
+                
+                filtered_parts = []
+                for part in parts:
+                    if '*' in part:
+                        filtered_parts.append(part)
+                
+                cleaned_rating_string = " / ".join(filtered_parts)
+
+                if cleaned_rating_string:
+                    handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Detailed Rating'})
+                    handler.characters(_sanitize_xml_string(cleaned_rating_string))
+                    handler.endElement('review')
+                    f.write(b'\n    ')
+
+            if item.get('image_base_path'):
+                image_url_300 = _sanitize_xml_string(f"{item['image_base_path']}_300.jpg")
+                image_url_600 = _sanitize_xml_string(f"{item['image_base_path']}_600.jpg")
+                
+                handler.startElement('image', {'type': 'still', 'size': '2', 'orient': 'L', 'system': 'tvsp'})
+                handler.characters(image_url_300)
+                handler.endElement('image')
+                f.write(b'\n    ')
+                
+                handler.startElement('image', {'type': 'still', 'size': '3', 'orient': 'L', 'system': 'tvsp'})
+                handler.characters(image_url_600)
+                handler.endElement('image')
+                f.write(b'\n    ')
+
+            handler.endElement('programme')
+            f.write(b'\n')
+
+        handler.endElement('tv')
+        f.write(b'\n')
+
+    logger.info(f"XMLTV file '{output_file}' generated successfully.")
+
+
+# --- Scraper Execution via Command-Line Arguments ---
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="Lean Web Scraper for TVSpielfilm.de using Requests + lxml.html and cssselect."
+    )
+    # Channel Selection
+    parser.add_argument(
+        '--list-channels',
+        action='store_true',
+        help='List all available channel IDs and their names, then exit.'
+    )
+    parser.add_argument(
+        '--channel-ids',
+        type=str,
+        help='Comma-separated list of channel IDs (e.g., "ARD,ZDF"). If not provided, all channels are scraped.'
+    )
+    parser.add_argument(
+        '--channel-ids-file',
+        type=str,
+        help='Path to a file containing a comma-separated list of channel IDs. If provided, this option takes precedence over --channel-ids.'
+    )
+    # Date/Time Range
+    parser.add_argument(
+        '--date',
+        type=str,
+        help='Specific date for scraping in %%Y%%m%%d format (e.g., 20250523). If provided, only this date is scraped, and --days is ignored. If not provided, current date is used as start date, and --days controls the number of days scraped.'
+    )
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=DEFAULT_DAYS,
+        help=f'Number of days to scrape (1-{MAX_DAYS_TO_SCRAPE}). Default: {DEFAULT_DAYS} (means today only). This argument is ignored if --date is provided.'
+    )
+    # Output Configuration
+    parser.add_argument(
+        '--output-file',
+        type=str,
+        default='tvspielfilm',
+        help='Path to the output file. The file extension will be automatically added based on --output-format (e.g., .json, .xml). If a custom extension is provided, it will be used. Default: tvspielfilm.'
+    )
+    parser.add_argument(
+        '--output-format',
+        type=str,
+        default=DEFAULT_OUTPUT_FORMAT,
+        choices=['xmltv', 'json'],
+        help=f'Output format: "xmltv", "json" (JSON array). Default: {DEFAULT_OUTPUT_FORMAT}.'
+    )
+    parser.add_argument(
+        '--img-size',
+        type=str,
+        choices=['300', '600'],
+        default=DEFAULT_IMG_SIZE,
+        help=f'Image size to extract ("300" or "600"). Default: {DEFAULT_IMG_SIZE}.'
+    )
+    parser.add_argument(
+        '--check-img',
+        action='store_true',
+        help='If set, performs an additional HEAD request to check if image URLs are valid. Increases scrape time.'
+    )
+    # Logging
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        default='WARNING',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Set the logging level. Default: WARNING.'
+    )
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable debug logging output (overrides --log-level to DEBUG).'
+    )
+    parser.add_argument(
+        '--use-syslog',
+        action='store_true',
+        help='Send log output to syslog (Linux logger utility).'
+    )
+    parser.add_argument(
+        '--syslog-tag',
+        type=str,
+        default=DEFAULT_SYSLOG_TAG,
+        help=f'Identifier (tag) to use for syslog messages. Default: "{DEFAULT_SYSLOG_TAG}".'
+    )
+    # Caching
+    parser.add_argument(
+        '--disable-cache',
+        action='store_true',
+        help=(
+            'Disable caching of HTTP responses to disk. '
+            'By default, caching is enabled to reduce network requests on repeated runs. '
+            'Uses the requests-cache library.'
+        )
+    )
+    parser.add_argument(
+        '--cache-ttl',
+        type=int,
+        default=DEFAULT_CACHE_TTL_SECONDS,
+        help=f'Cache Time To Live in seconds. This defines how long a cached response '
+             f'is considered "fresh" and will be served directly without contacting the server. '
+             f'After this time, requests-cache will attempt to revalidate the content with the server. '
+             f'Default: {DEFAULT_CACHE_TTL_SECONDS // 3600} hours.'
+    )
+    parser.add_argument(
+        '--cache-dir',
+        type=str,
+        help=f'Specify a custom directory for the requests-cache files. Default is a subdirectory "{DEFAULT_CACHE_SUBDIR}" in the system\'s temporary directory.'
+    )
+    parser.add_argument(
+        '--clear-cache',
+        action='store_true',
+        help='Clears the entire requests-cache directory before starting the scrape. This will delete all cached responses.'
+    )
+    parser.add_argument(
+        '--keep-stale-cache',
+        action='store_true',
+        help='If set, expired cache files will NOT be automatically removed at the start of the run. requests-cache handles expiration, but this prevents immediate deletion of stale entries.'
+    )
+    # Performance
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help=f'Maximum number of concurrent workers for fetching data. Default: {DEFAULT_MAX_WORKERS}.'
+    )
+    parser.add_argument(
+        '--max-retries',
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=f'Maximum number of retry attempts for failed HTTP requests (e.g., 429, 5xx, connection errors). Default: {DEFAULT_MAX_RETRIES}.'
+    )
+    parser.add_argument(
+        '--min-request-delay',
+        type=float,
+        default=DEFAULT_MIN_REQUEST_DELAY,
+        help=f'Minimum delay in seconds between HTTP requests. Applies only to live fetches (not cached). Default: {DEFAULT_MIN_REQUEST_DELAY}s.'
+    )
+    parser.add_argument( # New argument for schedule retries
+        '--max-schedule-retries',
+        type=int,
+        default=DEFAULT_MAX_SCHEDULE_RETRIES,
+        help=f'Maximum number of retry attempts for application-level errors during schedule parsing/generation. Default: {DEFAULT_MAX_SCHEDULE_RETRIES}.'
+    )
+
+    args = parser.parse_args()
+
+    if args.verbose:
+        numeric_level = logging.DEBUG
+        logger.info("Verbose mode enabled: Setting log level to DEBUG.")
+    else:
+        numeric_level = getattr(logging, args.log_level.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f'Invalid log level: {args.log_level}')
+    
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    syslog_formatter = logging.Formatter(
+        fmt='%(asctime)s ' + f'{args.syslog_tag}: %(message)s',
+        datefmt="%b %d %H:%M:%S"
+    )
+    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    if args.use_syslog:
+        try:
+            syslog_handler = logging.handlers.SysLogHandler(address='/dev/log', facility=logging.handlers.SysLogHandler.LOG_USER)
+            syslog_handler.setFormatter(syslog_formatter)
+            logging.root.addHandler(syslog_handler)
+            logger.info(f"Logging to syslog enabled with tag: '{args.syslog_tag}'.")
+        except Exception as e:
+            logger.error(f"Failed to set up syslog logging to '/dev/log'. This often means the syslog daemon "
+                         f"is not running or '/dev/log' is not accessible: {e}. Falling back to console logging.")
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(console_formatter)
+            logging.root.addHandler(console_handler)
+    else:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(console_formatter)
+        logging.root.addHandler(console_handler)
+
+    logging.root.setLevel(numeric_level)
+    logger.setLevel(numeric_level)
+
+    base_cache_path = args.cache_dir if args.cache_dir else os.path.join(tempfile.gettempdir(), DEFAULT_CACHE_SUBDIR)
+
+    if args.clear_cache:
+        if os.path.exists(base_cache_path):
+            logger.info(f"Clearing requests-cache directory: {base_cache_path}")
+            shutil.rmtree(base_cache_path)
+            logger.info("requests-cache cleared.")
+        else:
+            logger.info("No requests-cache directory found to clear.")
+
+    scraper = TvsLeanScraper(
+        channel_ids=args.channel_ids,
+        days=args.days,
+        img_size=args.img_size,
+        check_img=args.check_img,
+        start_date_str=args.date,
+        enable_cache=not args.disable_cache,
+        cache_ttl=args.cache_ttl,
+        cache_dir_path=args.cache_dir,
+        max_workers=args.max_workers,
+        clean_stale_cache=not args.keep_stale_cache,
+        max_retries=args.max_retries,
+        channel_ids_file=getattr(args, 'channel_ids_file', None),
+        min_request_delay=args.min_request_delay,
+        max_schedule_retries=args.max_schedule_retries # New: Pass max_schedule_retries
+    )
+
+    if args.list_channels:
+        logger.info("Fetching available channels...")
+        initial_response = scraper.fetch_url(f"{BASE_URL}/sender/")
+        if initial_response:
+            channel_list = scraper.parse_sender_list(initial_response.content)
+            if channel_list:
+                print("\n--- Available Channels (ID: Name) ---")
+                for channel in sorted(channel_list, key=lambda x: x['name'].lower()):
+                    print(f"{channel['source_id']}: {channel['name']}")
+                print("-------------------------------------\n")
+            else:
+                logger.warning("No channels found.")
+        else:
+            logger.error("Failed to fetch channel list. Cannot list channels.")
+        exit(0)
+
+    start_time = time.time()
+    extracted_data = scraper.run_scraper()
+    end_time = time.time()
+
+    elapsed_time = end_time - start_time
+
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if args.output_format == 'json':
+        output_filename = args.output_file
+        if not output_filename.endswith('.json'):
+            output_filename = f"{args.output_file}.json"
+        
+        logger.info(f"Writing items to {output_filename} in JSON array format.")
+        
+        processed_data_for_json = []
+        for item in extracted_data:
+            if item.get('rating'):
+                original_rating_string = item['rating']
+                parts = [p.strip() for p in original_rating_string.split('/')]
+                
+                filtered_parts = []
+                for part in parts:
+                    if '*' in part:
+                        filtered_parts.append(part)
+                
+                cleaned_rating_string = " / ".join(filtered_parts)
+                
+                if cleaned_rating_string:
+                    item['rating'] = cleaned_rating_string
+                else:
+                    item['rating'] = None
+            processed_data_for_json.append(item)
+
+        with open(output_filename, 'w', encoding='utf-8') as f:
+            json.dump(processed_data_for_json, f, ensure_ascii=False, indent=4)
+        logger.info(f"Data saved successfully. Total {len(extracted_data)} items written.")
+    elif args.output_format == 'xmltv':
+        output_filename = args.output_file if args.output_file.endswith('.xml') else f"{args.output_file}.xml"
+        generate_xmltv(extracted_data, output_filename)
+        
+    else:
+        logger.warning("No data extracted or invalid output format specified. Output file will not be created.")
+
+    logger.info(f"Scraping and data processing completed in {int(hours)}h {int(minutes)}m {seconds:.2f}s.")

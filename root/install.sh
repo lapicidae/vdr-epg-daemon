@@ -47,6 +47,8 @@ runtimePKG=(
     locales
     passwd
     python3
+    python3-cssselect
+    python3-requests-cache
     ssmtp
     tzdata
     unzip
@@ -156,6 +158,8 @@ sed -i 's/CONFDEST     = $(DESTDIR)\/etc\/epgd/CONFDEST     = $(DESTDIR)\/defaul
 sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
 git clone https://github.com/chriszero/epgd-plugin-tvsp.git ./PLUGINS/tvsp
+git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
+patch -d configs -i ../PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
 #make all install
 make install-epgd install-epghttpd
 
@@ -179,6 +183,10 @@ chown root:root /usr/local/bin/healthcheck
 chmod 755 /usr/local/bin/healthcheck
 chown root:root /usr/local/bin/svdrpsend
 chmod 755 /usr/local/bin/svdrpsend
+chown root:root /usr/local/bin/run-scraper
+chmod 755 /usr/local/bin/run-scraper
+chown root:root /usr/local/bin/tvs-scraper
+chmod 755 /usr/local/bin/tvs-scraper
 
 _ntfy 'cleanup'
 apt-get purge -qy --auto-remove "${buildPKG[@]}"
