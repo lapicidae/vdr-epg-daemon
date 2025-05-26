@@ -19,6 +19,7 @@ import logging.handlers
 import sqlite3
 import lxml.html
 from lxml.cssselect import CSSSelector
+import io
 
 # --- Configuration ---
 USER_AGENTS = [
@@ -56,7 +57,7 @@ DEFAULT_MIN_REQUEST_DELAY = 0.1
 DEFAULT_MAX_SCHEDULE_RETRIES = 2
 
 
-# Compiled Regex patterns used across the script
+# Compiled Regex patterns
 re_cast_entry_match = re.compile(r'(.+?)\s*\((.+?)\)')
 
 # Regex to find characters NOT allowed in XML 1.0 documents.
@@ -69,8 +70,7 @@ _INVALID_XML_CHARS_PATTERN = re.compile(
 )
 
 def _sanitize_xml_string(text):
-    """
-    Removes characters from a string that are invalid in XML 1.0 documents.
+    """Removes characters from a string that are invalid in XML 1.0 documents.
 
     :param text: The input string to sanitize.
     :type text: str or None
@@ -84,16 +84,14 @@ def _sanitize_xml_string(text):
 
 
 class TvsLeanScraper:
-    """
-    A lean web scraper for TVSpielfilm.de to extract TV program data.
+    """A lean web scraper for TVSpielfilm.de to extract TV program data.
 
     This scraper uses requests and lxml.html for HTML parsing, supports
     caching with revalidation, parallel fetching, and handles rate limiting
     with exponential backoff.
     """
     def __init__(self, channel_ids=None, days=None, img_size=None, check_img=None, start_date_str=None, enable_cache=True, cache_ttl=DEFAULT_CACHE_TTL_SECONDS, cache_dir_path=None, max_workers=DEFAULT_MAX_WORKERS, clean_stale_cache=True, max_retries=DEFAULT_MAX_RETRIES, channel_ids_file=None, min_request_delay=DEFAULT_MIN_REQUEST_DELAY, max_schedule_retries=DEFAULT_MAX_SCHEDULE_RETRIES):
-        """
-        Initializes the TvsLeanScraper instance.
+        """Initializes the TvsLeanScraper instance.
 
         :param channel_ids: Comma-separated string of channel IDs to target. If None, all channels are scraped.
         :type channel_ids: str, optional
@@ -188,8 +186,7 @@ class TvsLeanScraper:
         adapter = HTTPAdapter(max_retries=retry_strategy)
 
         def should_cache(response):
-            """
-            Determines if a response should be cached based on its Content-Type header.
+            """Determines if a response should be cached based on its Content-Type header.
             Only caches HTML content.
 
             :param response: The HTTP response object.
@@ -236,8 +233,6 @@ class TvsLeanScraper:
         self.re_rating_class_match = re.compile(r'rating-(\d+)')
 
         # Pre-compiled CSS Selectors for lxml for performance.
-        # These selectors target specific elements on TVSpielfilm.de mobile pages.
-        # Each selector's name generally indicates its purpose (e.g., selector_sender_links).
         self.selector_sender_links = CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
         self.selector_li_elements = CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
         self.selector_title_tag = CSSSelector('strong.tv-tip-heading span.title')
@@ -274,8 +269,7 @@ class TvsLeanScraper:
 
 
     def _build_schedule_url(self, channel_url, current_date):
-        """
-        Constructs the schedule URL for a given channel and date.
+        """Constructs the schedule URL for a given channel and date.
 
         :param channel_url: Base URL of the channel.
         :type channel_url: str
@@ -288,8 +282,7 @@ class TvsLeanScraper:
         return f"{channel_url}?date={date_str}"
 
     def _get_formatted_image_url(self, image_base_path, img_size):
-        """
-        Constructs the full image URL based on the base path and desired size.
+        """Constructs the full image URL based on the base path and desired size.
 
         :param image_base_path: The base path of the image without size or extension.
         :type image_base_path: str
@@ -303,8 +296,7 @@ class TvsLeanScraper:
         return None
 
     def fetch_url(self, url, allow_redirects=True):
-        """
-        Sends an HTTP GET request to the given URL using the configured session.
+        """Sends an HTTP GET request to the given URL using the configured session.
 
         Handles HTTP status codes, timeouts, and retries. Applies a delay only for
         live (non-cached) requests to be polite.
@@ -366,8 +358,7 @@ class TvsLeanScraper:
         return None # Return None if both attempts fail
 
     def parse_sender_list(self, html_content):
-        """
-        Parses the list of channels from the main sender page (m.tvspielfilm.de/sender/)
+        """Parses the list of channels from the main sender page (m.tvspielfilm.de/sender/)
         using lxml.html and cssselect.
 
         :param html_content: The HTML content of the sender list page.
@@ -376,13 +367,14 @@ class TvsLeanScraper:
         :rtype: list[dict]
         """
         root = lxml.html.fromstring(html_content)
+        
         sender_links = self.selector_sender_links(root)
         logger.debug(f"Found {len(sender_links)} potential sender links.")
 
         channel_data = []
         for link in sender_links:
             href = link.get('href')
-            name = link.text_content().strip()
+            name = _sanitize_xml_string(link.text_content().strip())
             
             source_id = None
             source_id_match = self.re_source_id_html.search(href)
@@ -417,8 +409,7 @@ class TvsLeanScraper:
         return channel_data
 
     def parse_channel_schedule(self, html_content, channel_name, channel_url, channel_source_id, current_date):
-        """
-        Parses the schedule for a single channel and a specific date using lxml.html and cssselect.
+        """Parses the schedule for a single channel and a specific date using lxml.html and cssselect.
 
         :param html_content: The HTML content of the channel's schedule page.
         :type html_content: str
@@ -434,6 +425,7 @@ class TvsLeanScraper:
         :rtype: list[dict]
         """
         root = lxml.html.fromstring(html_content)
+        
         extracted_items = []
 
         for li_element in self.selector_li_elements(root):
@@ -449,7 +441,7 @@ class TvsLeanScraper:
 
             title_tag = self.selector_title_tag(li_element)
             if title_tag:
-                item_data['title'] = title_tag[0].text_content().strip()
+                item_data['title'] = _sanitize_xml_string(title_tag[0].text_content().strip())
             else:
                 item_data['title'] = None
 
@@ -516,8 +508,7 @@ class TvsLeanScraper:
         return extracted_items
 
     def parse_detail_page(self, detail_url):
-        """
-        Parses the detail page of a program to extract additional information
+        """Parses the detail page of a program to extract additional information
         using lxml.html and cssselect.
 
         :param detail_url: The URL of the program's detail page.
@@ -544,20 +535,20 @@ class TvsLeanScraper:
         if description_section:
             short_desc_tag = self.selector_short_desc_tag(description_section[0])
             if short_desc_tag:
-                detail_data['shortdescription'] = short_desc_tag[0].text_content().strip()
+                detail_data['shortdescription'] = _sanitize_xml_string(short_desc_tag[0].text_content().strip())
 
             long_desc_paragraphs = self.selector_long_desc_paragraphs(description_section[0])
             if long_desc_paragraphs:
-                detail_data['longdescription'] = "\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()])
+                detail_data['longdescription'] = _sanitize_xml_string("\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()]))
 
         genre_underline_tag = self.selector_genre_underline_tag(root)
         if genre_underline_tag:
             genre_text = genre_underline_tag[0].text_content().strip()
             genre_match = self.re_genre_pipe_match.search(genre_text)
             if genre_match:
-                detail_data['genre'] = genre_match.group(1).strip()
+                detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
             else:
-                detail_data['genre'] = genre_text.strip()
+                detail_data['genre'] = _sanitize_xml_string(genre_text.strip())
         
         if not detail_data['genre']:
             all_infos_containers = self.selector_infos_container(root)
@@ -568,7 +559,7 @@ class TvsLeanScraper:
                         if dt_element.text_content().strip() == "Genre":
                             genre_dd = dt_element.getnext()
                             if genre_dd:
-                                detail_data['genre'] = genre_dd.text_content().strip()
+                                detail_data['genre'] = _sanitize_xml_string(genre_dd.text_content().strip())
                                 break
                 if detail_data['genre']:
                     break
@@ -576,15 +567,15 @@ class TvsLeanScraper:
         if not detail_data['genre']:
             genre_tag_general = self.selector_genre_tag_general(root)
             if genre_tag_general:
-                detail_data['genre'] = genre_tag_general[0].text_content().strip()
+                detail_data['genre'] = _sanitize_xml_string(genre_tag_general[0].text_content().strip())
             else:
                 genre_time_tag_schedule = self.selector_genre_time_tag_schedule(root)
                 if genre_time_tag_schedule:
                     genre_match = self.re_genre_pipe_match.search(genre_time_tag_schedule[0].text_content().strip())
                     if genre_match:
-                        detail_data['genre'] = genre_match.group(1).strip()
+                        detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
                     else:
-                        detail_data['genre'] = genre_time_tag_schedule[0].text_content().strip()
+                        detail_data['genre'] = _sanitize_xml_string(genre_time_tag_schedule[0].text_content().strip())
 
         all_infos_containers = self.selector_infos_container(root)
         for infos_container_elem in all_infos_containers:
@@ -598,9 +589,9 @@ class TvsLeanScraper:
                         dt_text = dt.text_content().strip()
                         dd_text = dd.text_content().strip()
                         if dt_text == 'Originaltitel':
-                            detail_data['original_title'] = dd_text
+                            detail_data['original_title'] = _sanitize_xml_string(dd_text)
                         elif dt_text == 'Land':
-                            detail_data['country'] = dd_text
+                            detail_data['country'] = _sanitize_xml_string(dd_text)
                         elif dt_text == 'Jahr':
                             try:
                                 detail_data['year'] = int(dd_text)
@@ -632,7 +623,7 @@ class TvsLeanScraper:
                         if actor_dd_tag is not None:
                             actor_name = actor_dd_tag.text_content().strip()
                             if actor_name:
-                                cast_list.append(f"{actor_name} ({role})" if role else actor_name)
+                                cast_list.append(_sanitize_xml_string(f"{actor_name} ({role})" if role else actor_name))
                 detail_data['cast'] = ", ".join(cast_list) if cast_list else None
                 break
 
@@ -648,11 +639,12 @@ class TvsLeanScraper:
                         dt_text = dt.text_content().strip()
                         dd_text = dd.text_content().strip()
                         if dt_text == 'Regie':
-                            detail_data['director'] = dd_text
+                            detail_data['director'] = _sanitize_xml_string(dd_text)
                         elif dt_text == 'Drehbuch':
-                            detail_data['screenplay'] = f"{detail_data['screenplay']}, {dd_text}" if detail_data['screenplay'] else dd_text
+                            sanitized_dd_text = _sanitize_xml_string(dd_text)
+                            detail_data['screenplay'] = f"{detail_data['screenplay']}, {sanitized_dd_text}" if detail_data['screenplay'] else sanitized_dd_text
                         elif dt_text == 'Kamera':
-                            detail_data['camera'] = dd_text
+                            detail_data['camera'] = _sanitize_xml_string(dd_text)
                 break
 
         content_rating_section = self.selector_content_rating_section(root)
@@ -669,7 +661,7 @@ class TvsLeanScraper:
             
             txt_rating_tag = self.selector_txt_rating_tag(content_rating_section[0])
             if txt_rating_tag:
-                detail_data['txtrating'] = txt_rating_tag[0].text_content().strip()
+                detail_data['txtrating'] = _sanitize_xml_string(txt_rating_tag[0].text_content().strip())
 
             rating_list_items = self.selector_rating_list_items(content_rating_section[0])
             if rating_list_items:
@@ -684,17 +676,16 @@ class TvsLeanScraper:
                             stars = '*' * num_dots
                             ratings_parts.append(f"{label[0].text_content().strip()} {stars}")
                 if ratings_parts:
-                    detail_data['rating'] = " / ".join(ratings_parts)
+                    detail_data['rating'] = _sanitize_xml_string(" / ".join(ratings_parts))
 
             imdb_rating_tag = self.selector_imdb_rating_tag(content_rating_section[0])
             if imdb_rating_tag:
-                detail_data['imdbrating'] = imdb_rating_tag[0].text_content().strip()
+                detail_data['imdbrating'] = _sanitize_xml_string(imdb_rating_tag[0].text_content().strip())
 
         return detail_data
 
     def check_image_url(self, url, original_image_url, item_key):
-        """
-        Checks the status of an image URL by performing a HEAD request using the main session.
+        """Checks the status of an image URL by performing a HEAD request using the main session.
 
         The `filter_fn` on the main session ensures that image responses are not cached.
 
@@ -746,9 +737,9 @@ class TvsLeanScraper:
         return None # Return None if both attempts fail
 
     def _process_channel_day_schedule(self, channel_info, current_date, channel_num, total_channels):
-        """
-        Helper method to fetch and parse a day's schedule for a channel, with retry logic for
+        """Helper method to fetch and parse a day's schedule for a channel, with retry logic for
         application-level exceptions during schedule parsing.
+
         This method also logs the "Scraping the channel" message once per channel.
 
         :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
@@ -766,7 +757,6 @@ class TvsLeanScraper:
         channel_url = channel_info['url']
         channel_source_id = channel_info['source_id']
 
-        # Log "Scraping the channel" message only once per channel
         if channel_source_id not in self.logged_channel_start_messages:
             logger.info(f"Scraping the channel: {channel_name} (ID: {channel_source_id}) for {self.days_to_scrape} day(s). [{channel_num}/{total_channels}]")
             self.logged_channel_start_messages.add(channel_source_id)
@@ -775,7 +765,6 @@ class TvsLeanScraper:
 
         for attempt in range(self.max_schedule_retries + 1):
             try:
-                # Conditionally add "Attempt X/Y" to the log message
                 attempt_str = f" (Attempt {attempt + 1}/{self.max_schedule_retries + 1})" if attempt > 0 else ""
                 logger.info(f"Fetching schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
                 schedule_response = self.fetch_url(schedule_url)
@@ -789,23 +778,19 @@ class TvsLeanScraper:
                         current_date
                     )
                 else:
-                    # If fetch_url returns None, it means an HTTP/network error occurred and was handled/logged there.
-                    # We should not retry application logic if the fetch itself failed.
                     logger.warning(f"Failed to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} after HTTP retries. Skipping application-level retries.")
                     return []
             except Exception as exc:
                 logger.exception(f"Schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')} generated an exception on attempt {attempt + 1}: {exc}")
                 if attempt < self.max_schedule_retries:
-                    # Implement a small delay before retrying application logic
-                    time.sleep(1 * (attempt + 1)) # Linear backoff for simplicity
+                    time.sleep(1 * (attempt + 1))
                 else:
                     logger.error(f"Max retries ({self.max_schedule_retries}) exhausted for schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Skipping this day.")
                     return []
-        return [] # Should not be reached, but ensures a return value
+        return []
 
     def run_scraper(self):
-        """
-        Orchestrates the main scraping process.
+        """Orchestrates the main scraping process.
 
         Fetches the list of channels, then concurrently scrapes the schedule
         for each channel for the specified number of days.
@@ -847,8 +832,6 @@ class TvsLeanScraper:
                     all_extracted_items.extend(items_for_day)
                     logger.info(f"Finished processing items for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}. Extracted {len(items_for_day)} items.")
                 except Exception as exc:
-                    # This outer catch should ideally not be hit if _process_channel_day_schedule handles retries.
-                    # It's a safeguard for unhandled exceptions from the future.result() call itself.
                     logger.exception(f"An unhandled exception occurred for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}: {exc}")
 
         logger.info(f"Scraping completed. Total items extracted: {len(all_extracted_items)}")
@@ -874,8 +857,7 @@ class TvsLeanScraper:
 
 # --- Helper functions for XMLTV generation ---
 def _convert_unix_to_xmltv_time(unix_timestamp_str):
-    """
-    Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
+    """Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
 
     :param unix_timestamp_str: Unix timestamp as a string.
     :type unix_timestamp_str: str
@@ -900,9 +882,10 @@ def _convert_unix_to_xmltv_time(unix_timestamp_str):
         return None
 
 def generate_xmltv(data_list, output_file):
-    """
-    Generates an XMLTV-compliant XML file from the scraped data
-    using xml.sax.saxutils.XMLGenerator for streaming output.
+    """Generates an XMLTV-compliant XML file from the scraped data
+    using xml.sax.saxutils.XMLGenerator for streaming output,
+    buffered in memory for efficient file writing.
+
     Applies XML character sanitation to all string content.
 
     :param data_list: A list of dictionaries, each representing a program item.
@@ -910,24 +893,24 @@ def generate_xmltv(data_list, output_file):
     :param output_file: The path to the output XMLTV file.
     :type output_file: str
     """
-    logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator for streaming")
+    logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator with in-memory buffering.")
 
     channels = {}
     for item in data_list:
         sourceid = item.get('sourceid')
         channelname = item.get('channelname')
         if sourceid and sourceid not in channels:
-            channels[sourceid] = {'name': _sanitize_xml_string(channelname)}
+            channels[sourceid] = {'name': channelname} 
 
     if not data_list:
         logger.warning("No program data to generate XMLTV. Output file will not be created.")
         return
 
-    with open(output_file, 'wb') as f:
-        handler = XMLGenerator(f, encoding='utf-8')
+    with io.BytesIO() as buffer:
+        handler = XMLGenerator(buffer, encoding='utf-8')
 
-        f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
-        f.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
+        buffer.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        buffer.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
 
         handler.startElement('tv', {
             'date': datetime.now().strftime('%Y%m%d%H%M%S %z').replace(' ', ''),
@@ -935,18 +918,18 @@ def generate_xmltv(data_list, output_file):
             'source-info-url': _sanitize_xml_string('https://m.tvspielfilm.de/'),
             'generator-info-name': _sanitize_xml_string('TVSpielfilm-Scraper/1.0')
         })
-        f.write(b'\n')
+        buffer.write(b'\n')
 
         for sourceid, channel_info in sorted(channels.items()):
-            robust_channel_id = f"{_sanitize_xml_string(sourceid.lower())}.tvs"
+            robust_channel_id = f"{sourceid.lower()}.tvs" 
             handler.startElement('channel', {'id': robust_channel_id})
-            f.write(b'\n  ')
+            buffer.write(b'\n  ')
             handler.startElement('display-name', {})
-            handler.characters(_sanitize_xml_string(channel_info['name']))
+            handler.characters(channel_info['name'])
             handler.endElement('display-name')
-            f.write(b'\n')
+            buffer.write(b'\n')
             handler.endElement('channel')
-            f.write(b'\n')
+            buffer.write(b'\n')
 
         for item in data_list:
             start_time_xmltv = _convert_unix_to_xmltv_time(item.get('starttime'))
@@ -956,7 +939,7 @@ def generate_xmltv(data_list, output_file):
                 logger.warning(f"Skipping program due to missing essential data (buffered): {item.get('title', 'N/A')} on {item.get('channelname', 'N/A')}")
                 continue
 
-            robust_channel_id = f"{_sanitize_xml_string(item['sourceid'].lower())}.tvs"
+            robust_channel_id = f"{item['sourceid'].lower()}.tvs"
             programme_attrib = {
                 'start': start_time_xmltv,
                 'channel': robust_channel_id
@@ -965,128 +948,128 @@ def generate_xmltv(data_list, output_file):
                 programme_attrib['stop'] = stop_time_xmltv
 
             handler.startElement('programme', programme_attrib)
-            f.write(b'  ')
+            buffer.write(b'  ')
 
             handler.startElement('title', {})
-            handler.characters(_sanitize_xml_string(item['title']))
+            handler.characters(item['title'])
             handler.endElement('title')
-            f.write(b'\n    ')
+            buffer.write(b'\n    ')
 
             full_description = []
             if item.get('shortdescription'):
-                full_description.append(_sanitize_xml_string(item['shortdescription']))
+                full_description.append(item['shortdescription'])
             if item.get('longdescription'):
-                full_description.append(_sanitize_xml_string(item['longdescription']))
+                full_description.append(item['longdescription'])
             if full_description:
                 handler.startElement('desc', {})
                 handler.characters('\n'.join(full_description))
                 handler.endElement('desc')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('director') or item.get('cast') or item.get('screenplay'):
                 handler.startElement('credits', {})
-                f.write(b'\n      ')
+                buffer.write(b'\n      ')
                 if item.get('director'):
                     handler.startElement('director', {})
-                    handler.characters(_sanitize_xml_string(item['director']))
+                    handler.characters(item['director'])
                     handler.endElement('director')
-                    f.write(b'\n      ')
+                    buffer.write(b'\n      ')
                 
                 if item.get('cast'):
                     cast_entries = [c.strip() for c in item['cast'].split(',')]
                     for entry in cast_entries:
                         match = re_cast_entry_match.match(entry)
                         if match:
-                            actor_name = _sanitize_xml_string(match.group(1).strip())
-                            actor_role = _sanitize_xml_string(match.group(2).strip())
+                            actor_name = match.group(1).strip()
+                            actor_role = match.group(2).strip()
                             handler.startElement('actor', {'role': actor_role})
                             handler.characters(actor_name)
                             handler.endElement('actor')
                         else:
                             handler.startElement('actor', {})
-                            handler.characters(_sanitize_xml_string(entry))
+                            handler.characters(entry)
                             handler.endElement('actor')
-                        f.write(b'\n      ')
+                        buffer.write(b'\n      ')
 
                 if item.get('screenplay'):
                     writers = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
                     for writer in writers:
                         handler.startElement('writer', {})
-                        handler.characters(_sanitize_xml_string(writer))
+                        handler.characters(writer)
                         handler.endElement('writer')
-                        f.write(b'\n      ')
+                        buffer.write(b'\n      ')
                 
                 handler.endElement('credits')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('year'):
                 handler.startElement('date', {})
                 handler.characters(str(item['year']))
                 handler.endElement('date')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('genre'):
                 categories = [c.strip() for c in item['genre'].split(',') if c.strip()]
                 for category in categories:
                     handler.startElement('category', {})
-                    handler.characters(_sanitize_xml_string(category))
+                    handler.characters(category)
                     handler.endElement('category')
-                    f.write(b'\n    ')
+                    buffer.write(b'\n    ')
 
             if item.get('duration') is not None:
                 length_minutes = round(item['duration'] / 60)
                 handler.startElement('length', {'units': 'minutes'})
                 handler.characters(str(length_minutes))
                 handler.endElement('length')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('link'):
                 handler.startElement('url', {})
-                handler.characters(_sanitize_xml_string(item['link']))
+                handler.characters(item['link']) 
                 handler.endElement('url')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('country'):
                 handler.startElement('country', {})
-                handler.characters(_sanitize_xml_string(item['country']))
+                handler.characters(item['country']) 
                 handler.endElement('country')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('parentalrating') is not None:
                 handler.startElement('rating', {'system': 'FSK'})
-                f.write(b'\n      ')
+                buffer.write(b'\n      ')
                 handler.startElement('value', {})
                 handler.characters(str(item['parentalrating']))
                 handler.endElement('value')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
                 handler.endElement('rating')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('numrating') is not None:
                 handler.startElement('star-rating', {'system': 'TVSpielfilm'})
-                f.write(b'\n      ')
+                buffer.write(b'\n      ')
                 handler.startElement('value', {})
-                handler.characters(_sanitize_xml_string(f"{item['numrating']} / 3"))
+                handler.characters(f"{item['numrating']} / 3") 
                 handler.endElement('value')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
                 handler.endElement('star-rating')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
             
             if item.get('imdbrating'):
                 handler.startElement('star-rating', {'system': 'IMDB'})
-                f.write(b'\n      ')
+                buffer.write(b'\n      ')
                 handler.startElement('value', {})
-                handler.characters(_sanitize_xml_string(f"{item['imdbrating']} / 10"))
+                handler.characters(item['imdbrating']) 
                 handler.endElement('value')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
                 handler.endElement('star-rating')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             if item.get('txtrating'):
                 handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Editorial'})
-                handler.characters(_sanitize_xml_string(item['txtrating']))
+                handler.characters(item['txtrating'])
                 handler.endElement('review')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
             
             if item.get('rating'):
                 original_rating_string = item['rating']
@@ -1101,29 +1084,32 @@ def generate_xmltv(data_list, output_file):
 
                 if cleaned_rating_string:
                     handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Detailed Rating'})
-                    handler.characters(_sanitize_xml_string(cleaned_rating_string))
+                    handler.characters(cleaned_rating_string)
                     handler.endElement('review')
-                    f.write(b'\n    ')
+                    buffer.write(b'\n    ')
 
             if item.get('image_base_path'):
-                image_url_300 = _sanitize_xml_string(f"{item['image_base_path']}_300.jpg")
-                image_url_600 = _sanitize_xml_string(f"{item['image_base_path']}_600.jpg")
+                image_url_300 = f"{item['image_base_path']}_300.jpg"
+                image_url_600 = f"{item['image_base_path']}_600.jpg"
                 
                 handler.startElement('image', {'type': 'still', 'size': '2', 'orient': 'L', 'system': 'tvsp'})
                 handler.characters(image_url_300)
                 handler.endElement('image')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
                 
                 handler.startElement('image', {'type': 'still', 'size': '3', 'orient': 'L', 'system': 'tvsp'})
                 handler.characters(image_url_600)
                 handler.endElement('image')
-                f.write(b'\n    ')
+                buffer.write(b'\n    ')
 
             handler.endElement('programme')
-            f.write(b'\n')
+            buffer.write(b'\n')
 
         handler.endElement('tv')
-        f.write(b'\n')
+        buffer.write(b'\n')
+
+        with open(output_file, 'wb') as f_out:
+            f_out.write(buffer.getvalue())
 
     logger.info(f"XMLTV file '{output_file}' generated successfully.")
 
@@ -1264,7 +1250,7 @@ if __name__ == '__main__':
         default=DEFAULT_MIN_REQUEST_DELAY,
         help=f'Minimum delay in seconds between HTTP requests. Applies only to live fetches (not cached). Default: {DEFAULT_MIN_REQUEST_DELAY}s.'
     )
-    parser.add_argument( # New argument for schedule retries
+    parser.add_argument(
         '--max-schedule-retries',
         type=int,
         default=DEFAULT_MAX_SCHEDULE_RETRIES,
