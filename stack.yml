@@ -1,4 +1,3 @@
-version: '2.4'
 services:
   db:
     image: 'ghcr.io/lapicidae/mariadb-epglv:latest'
