@@ -53,7 +53,7 @@ RETRY_ON_CONNECTION_ERRORS = True
 DEFAULT_OUTPUT_FORMAT = 'xmltv'
 DEFAULT_SYSLOG_TAG = 'tvs-scraper'
 DEFAULT_MIN_REQUEST_DELAY = 0.1
-DEFAULT_MAX_SCHEDULE_RETRIES = 2 # New: Retries for application-level schedule generation errors
+DEFAULT_MAX_SCHEDULE_RETRIES = 2
 
 
 # Compiled Regex patterns used across the script
@@ -121,7 +121,7 @@ class TvsLeanScraper:
         :type channel_ids_file: str, optional
         :param min_request_delay: Minimum delay in seconds between HTTP requests for live fetches.
         :type min_request_delay: float
-        :param max_schedule_retries: Maximum retries for schedule parsing/generation errors.
+        :param max_schedule_retries: Maximum retries for application-level schedule generation errors.
         :type max_schedule_retries: int
         """
         self.target_sourceids = None
@@ -207,7 +207,9 @@ class TvsLeanScraper:
                 expire_after=self.cache_ttl,
                 allowable_methods=['GET', 'HEAD'],
                 use_compression=True,
-                filter_fn=should_cache
+                filter_fn=should_cache,
+                sqlite_connection_kwargs={'timeout': 30},
+                fast_save=True
             )
             logger.debug(f"Caching enabled with requests-cache (SQLite backend, compression enabled). Cache file: {os.path.join(self.cache_dir, 'tvs_cache.sqlite')}")
         else:
@@ -220,7 +222,8 @@ class TvsLeanScraper:
 
         self.max_workers = max_workers
         self.min_request_delay = min_request_delay
-        self.max_schedule_retries = max_schedule_retries # New: Store max schedule retries
+        self.max_schedule_retries = max_schedule_retries
+        self.logged_channel_start_messages = set()
 
         # Compiled Regex patterns
         self.re_source_id_html = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
@@ -316,7 +319,7 @@ class TvsLeanScraper:
         headers = {'User-Agent': random.choice(USER_AGENTS)}
 
         # Outer loop for retrying after a cache corruption error
-        for _ in range(2): # Try once, and once more if cache is corrupted
+        for _ in range(2):
             try:
                 response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
                 response.raise_for_status()
@@ -726,16 +729,27 @@ class TvsLeanScraper:
         except requests.exceptions.ConnectionError as e:
             logger.warning(f"Item {item_key} - Image URL connection error for {url}: {e}. Falling back to original URL: {original_image_url}")
             final_image_url = original_image_url
+        except (EOFError, sqlite3.InterfaceError) as e: # Catch specific cache corruption errors
+            logger.warning(f"Cache corruption detected for {url}: {e}. Clearing entry and retrying fetch.")
+            try:
+                self.session.cache.delete(url) # Delete the corrupted entry
+                logger.info(f"Cleared corrupted cache entry for: {url}")
+            except Exception as cache_del_exc:
+                logger.error(f"Failed to delete corrupted cache entry for {url}: {cache_del_exc}")
+            # Loop will retry the fetch. If it fails again, it will exit the loop.
+            time.sleep(0.1) # Small delay before immediate retry to avoid hammering
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Item {item_key} - Image URL check failed with unexpected exception for {url}: {e}. Falling back to original URL: {original_image_url}")
-            final_image_url = original_image_url
+            logger.error(f"An unexpected RequestException occurred for {url}: {e}")
+            return None
         
-        return final_image_url
+        logger.error(f"Failed to fetch {url} after retrying due to cache corruption.")
+        return None # Return None if both attempts fail
 
     def _process_channel_day_schedule(self, channel_info, current_date, channel_num, total_channels):
         """
         Helper method to fetch and parse a day's schedule for a channel, with retry logic for
         application-level exceptions during schedule parsing.
+        This method also logs the "Scraping the channel" message once per channel.
 
         :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
         :type channel_info: dict
@@ -751,6 +765,11 @@ class TvsLeanScraper:
         channel_name = channel_info['name']
         channel_url = channel_info['url']
         channel_source_id = channel_info['source_id']
+
+        # Log "Scraping the channel" message only once per channel
+        if channel_source_id not in self.logged_channel_start_messages:
+            logger.info(f"Scraping the channel: {channel_name} (ID: {channel_source_id}) for {self.days_to_scrape} day(s). [{channel_num}/{total_channels}]")
+            self.logged_channel_start_messages.add(channel_source_id)
 
         schedule_url = self._build_schedule_url(channel_url, current_date)
 
@@ -811,8 +830,7 @@ class TvsLeanScraper:
         tasks = []
         for i, channel in enumerate(channel_list):
             channel_num = i + 1
-            # Consolidated log message to appear once per channel
-            logger.info(f"Processing channel: {channel['name']} (ID: {channel['source_id']}) [{channel_num}/{total_channels}] for {self.days_to_scrape} day(s).")
+            logger.info(f"Processing channel: {channel['name']} (ID: {channel['source_id']}).")
             for j in range(self.days_to_scrape):
                 current_date = self.start_date + timedelta(days=j)
                 tasks.append((channel, current_date, channel_num, total_channels))
@@ -1316,7 +1334,7 @@ if __name__ == '__main__':
         max_retries=args.max_retries,
         channel_ids_file=getattr(args, 'channel_ids_file', None),
         min_request_delay=args.min_request_delay,
-        max_schedule_retries=args.max_schedule_retries # New: Pass max_schedule_retries
+        max_schedule_retries=args.max_schedule_retries
     )
 
     if args.list_channels:
