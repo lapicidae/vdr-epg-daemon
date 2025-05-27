@@ -815,6 +815,7 @@ class TvsLeanScraper:
             missing_ids = self.target_sourceids - available_channel_ids
             for missing_id in missing_ids:
                 logger.warning(f"Requested channel ID '{missing_id}' not found on TVSpielfilm.de. This channel will be skipped.")
+
             # Filter the channel_list to only include requested and found channels
             channel_list_to_scrape = [
                 channel for channel in available_channels_full_list
@@ -1370,9 +1371,6 @@ if __name__ == '__main__':
     
     if args.output_format == 'json':
         output_filename = args.output_file
-        if not output_filename.endswith('.json'):
-            output_filename = f"{args.output_file}.json"
-        
         logger.info(f"Writing items to {output_filename} in JSON array format.")
         
         processed_data_for_json = []
@@ -1398,9 +1396,9 @@ if __name__ == '__main__':
             json.dump(processed_data_for_json, f, ensure_ascii=False, indent=4)
         logger.info(f"Data saved successfully. Total {len(extracted_data)} items written.")
     elif args.output_format == 'xmltv':
-        output_filename = args.output_file if args.output_file.endswith('.xml') else f"{args.output_file}.xml"
+        output_filename = args.output_file
         generate_xmltv(extracted_data, output_filename)
-        
+
     else:
         logger.warning("No data extracted or invalid output format specified. Output file will not be created.")
 
