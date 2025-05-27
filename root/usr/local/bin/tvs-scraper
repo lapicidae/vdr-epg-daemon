@@ -805,15 +805,35 @@ class TvsLeanScraper:
             logger.error("Failed to fetch initial sender list page. Exiting.")
             return []
 
-        channel_list = self.parse_sender_list(initial_response.content)
+        # Get all available channels from the website
+        available_channels_full_list = self.parse_sender_list(initial_response.content)
+        available_channel_ids = {channel['source_id'] for channel in available_channels_full_list}
 
-        if not channel_list:
+        # Filter channel_list based on target_sourceids, if provided
+        if self.target_sourceids:
+            # Check for requested IDs that were not found on the website
+            missing_ids = self.target_sourceids - available_channel_ids
+            for missing_id in missing_ids:
+                logger.warning(f"Requested channel ID '{missing_id}' not found on TVSpielfilm.de. This channel will be skipped.")
+            # Filter the channel_list to only include requested and found channels
+            channel_list_to_scrape = [
+                channel for channel in available_channels_full_list
+                if channel['source_id'] in self.target_sourceids
+            ]
+            if not channel_list_to_scrape:
+                logger.warning("No requested channels found on the website. Exiting.")
+                return []
+        else:
+            # If no specific channels targeted, scrape all available
+            channel_list_to_scrape = available_channels_full_list
+
+        if not channel_list_to_scrape:
             logger.warning("No channels found or specified. Exiting.")
             return []
 
-        total_channels = len(channel_list)
+        total_channels = len(channel_list_to_scrape)
         tasks = []
-        for i, channel in enumerate(channel_list):
+        for i, channel in enumerate(channel_list_to_scrape):
             channel_num = i + 1
             logger.info(f"Processing channel: {channel['name']} (ID: {channel['source_id']}).")
             for j in range(self.days_to_scrape):
