@@ -8,7 +8,7 @@ Dieser Python-basierte Scraper ist darauf ausgelegt, EPG-Daten (Electronic Progr
 
 * **Zeitbereichs-Scraping:** Unterstützt das Scraping für einen bestimmten Starttermin oder für eine konfigurierbare Anzahl von Tagen ab dem aktuellen Datum.
 
-* **Caching:** Nutzt `requests-cache` mit SQLite-Backend, um HTTP-Antworten zwischenzuspeichern, was die Anzahl der Live-Anfragen reduziert und die Scraping-Geschwindigkeit bei wiederholten Läufen erhöht. Unterstützt Cache-Revalidierung und das Löschen des Caches.
+* **Caching:** Nutzt ein benutzerdefiniertes In-Memory- und dateibasiertes Caching-System, um abgerufene HTML-Inhalte und verarbeitete JSON-Daten zu speichern, was die Anzahl der Live-Anfragen erheblich reduziert und die Scraping-Geschwindigkeit bei wiederholten Läufen erhöht. Unterstützt Cache-Revalidierung und das Löschen des Caches.
 
 * **Parallele Verarbeitung:** Verwendet einen Thread-Pool, um die Sendepläne für Kanäle und Tage gleichzeitig abzurufen, was die Gesamt-Scraping-Zeit erheblich verkürzt.
 
@@ -31,35 +31,52 @@ Dieser Python-basierte Scraper ist darauf ausgelegt, EPG-Daten (Electronic Progr
 Der Scraper verwendet hauptsächlich `lxml` für effizientes HTML-Parsing und `cssselect` für die Unterstützung von CSS-Selektoren. Er benötigt die folgenden Python-Bibliotheken:
 
 * `requests`
-* `requests-cache`
+
 * `lxml`
+
 * `cssselect`
+
+* `zlib` (für CRC32-Hash-Vergleich im Caching)
 
 Sie können diese mit pip installieren:
 
-```
-pip install requests requests-cache lxml cssselect
 
-```
+pip install requests lxml cssselect
+
 
 ### Ausführbar machen
 
 Stellen Sie sicher, dass das Skript ausführbar ist:
 
-```
+
 chmod +x tvs-scraper
 
-```
 
 Es wird empfohlen, das Skript in einem Verzeichnis zu platzieren, das in Ihrem `PATH` enthalten ist (z.B. `/usr/local/bin/`), oder den vollständigen Pfad zum Skript zu verwenden.
 
-### Erster Lauf und Cache-Hinweis
+## Cache-Verhalten und Erster Lauf
 
-Beim **ersten Durchlauf** des Scrapers, insbesondere wenn viele Kanäle und Tage gescrapt werden, kann die Ausführung **sehr lange dauern**. Dies liegt daran, dass der Cache noch leer ist und alle Daten live aus dem Internet abgerufen werden müssen.
+Der Scraper bietet ein benutzerdefiniertes Caching-System, um die Anzahl der Live-Anfragen an den Server zu minimieren und die Ausführungszeit bei wiederholten Läufen zu beschleunigen. Das Caching von verarbeiteten JSON-Daten ist **standardmäßig aktiviert**.
 
-**Nach dem ersten Durchlauf** werden nachfolgende Scraper-Läufe in der Regel **deutlich schneller** sein. Der `requests-cache` speichert die abgerufenen HTTP-Antworten auf der Festplatte. Bei erneuten Anfragen für dieselben URLs werden die Daten aus dem Cache geladen, anstatt sie erneut vom Server herunterzuladen, was die Zeit erheblich verkürzt.
+**Erster Lauf:**
+Beim **ersten Durchlauf** des Scrapers, insbesondere wenn viele Kanäle und Tage gescrapt werden, kann die Ausführung **sehr lange dauern**. Dies liegt daran, dass der Cache noch leer ist und alle Daten live aus dem Internet abgerufen werden müssen. Die Standard-Cache-Verzögerung (`--cache-ttl`) beträgt 6 Stunden, und der Cache wird standardmäßig im System-Temp-Verzeichnis in einem Unterverzeichnis namens `tvs-cache` (`--cache-dir`) abgelegt.
 
-Beachten Sie, dass der Cache, abhängig von der Anzahl der gescrapten Kanäle und Tage, **sehr groß werden kann**. Er kann mehrere Gigabyte an Daten umfassen. Stellen Sie sicher, dass auf dem Laufwerk, auf dem der Cache gespeichert wird (standardmäßig im temporären Systemverzeichnis oder in dem mit `--cache-dir` angegebenen Pfad), ausreichend Speicherplatz vorhanden ist. Sie können den Cache jederzeit mit der Option `--clear-cache` leeren.
+**Nachfolgende Läufe:**
+**Nach dem ersten Durchlauf** werden nachfolgende Scraper-Läufe in der Regel **deutlich schneller** sein. Der Scraper speichert abgerufene HTML-Antworten und verarbeitete JSON-Daten auf der Festplatte. Bei erneuten Anfragen für dieselben URLs oder Daten werden Informationen aus dem Cache geladen, anstatt sie erneut vom Server herunterzuladen oder neu zu verarbeiten, was die Zeit erheblich verkürzt.
+
+**Cache-Konsistenzprüfung:**
+Standardmäßig verwendet der Scraper eine robuste Cache-Konsistenzprüfung, die auf `Content-Length` und `CRC32`-Hashes von Inhaltsstichproben vom Server basiert. Dies stellt sicher, dass zwischengespeicherte Daten nur verwendet werden, wenn der Remote-Inhalt sich nicht geändert hat. Eine einfachere, auf `ETag`/`Last-Modified` basierende bedingte GET-Anfrage kann mit `--cache-simple` aktiviert werden.
+
+**Potenzielle Verlangsamungen durch Cache:**
+In bestimmten Szenarien kann die Nutzung des Caches jedoch auch zu **erheblichen Verlangsamungen** führen. Dies kann passieren, wenn:
+
+* Der Cache sehr groß wird (mehrere Gigabyte), was die Lese- und Schreibvorgänge auf der Festplatte verlangsamt.
+
+* Der Speicherort des Caches (z.B. ein langsames Netzlaufwerk) nicht optimal ist.
+
+* Viele Cache-Einträge abgelaufen sind und eine Revalidierung mit dem Server stattfindet, was trotz Cache zu vielen Live-Anfragen führen kann.
+
+Beachten Sie, dass der Cache, abhängig von der Anzahl der gescrapten Kanäle und Tage, **sehr groß werden kann**. Stellen Sie sicher, dass auf dem Laufwerk, auf dem der Cache gespeichert wird, ausreichend Speicherplatz vorhanden ist. Sie können den Cache jederzeit mit der Option `--cache-clear` leeren.
 
 ## Verwendung
 
@@ -67,10 +84,9 @@ Der Scraper wird über die Kommandozeile mit verschiedenen Argumenten gesteuert.
 
 ### Allgemeine Syntax
 
-```
+
 ./tvs-scraper [OPTIONEN]
 
-```
 
 ### Wichtige Optionen
 
@@ -100,73 +116,100 @@ Der Scraper wird über die Kommandozeile mit verschiedenen Argumenten gesteuert.
 
 * `--syslog-tag <TAG>`: Bezeichner (Tag) für Syslog-Nachrichten. Standard: `tvs-scraper`.
 
-* `--disable-cache`: Deaktiviert das Caching von HTTP-Antworten. Standardmäßig ist Caching aktiviert.
+* `--cache-dir <PFAD>`: Benutzerdefiniertes Verzeichnis für die Cache-Dateien. Standard ist ein Unterverzeichnis `"tvs-cache"` im System-Temp-Verzeichnis.
 
-* `--cache-ttl <SEKUNDEN>`: Cache Time To Live in Sekunden. Standard: 24 Stunden (86400 Sekunden).
+* `--cache-clear`: Löscht das gesamte Cache-Verzeichnis (einschließlich des Caches für verarbeitete Daten) vor dem Start des Scrapers.
 
-* `--cache-dir <PFAD>`: Benutzerdefiniertes Verzeichnis für die Cache-Dateien. Standard ist ein Unterverzeichnis `tvs-cache` im System-Temp-Verzeichnis.
+* `--cache-disable`: Deaktiviert das Caching von verarbeiteten JSON-Daten auf der Festplatte. Standard: `False` (Cache ist aktiviert).
 
-* `--clear-cache`: Löscht das gesamte Cache-Verzeichnis vor dem Start des Scrapers.
+* `--cache-ttl <SEKUNDEN>`: Cache Time To Live in Sekunden. Dies definiert, wie lange eine verarbeitete JSON-Datei als "frisch" gilt und direkt ohne erneutes Scraping des HTMLs verwendet wird. Standard: `6` Stunden (`21600` Sekunden).
 
-* `--keep-stale-cache`: Verhindert, dass abgelaufene Cache-Dateien automatisch entfernt werden.
+* `--cache-simple`: Wenn gesetzt, aktiviert eine einfachere bedingte GET-Anfrage (unter Verwendung von ETag, Last-Modified und 304 Status) für die Cache-Konsistenz. Standardmäßig wird die Content-Length- und Range-Request-CRC32-Vergleichsmethode verwendet.
 
-* `--max-workers <ANZAHL>`: Maximale Anzahl gleichzeitiger Worker für das Abrufen von Daten. Standard: `5`.
+* `--cache-keep`: Wenn gesetzt, werden Cache-Dateien für vergangene Tage NICHT automatisch gelöscht. Standardmäßig werden Cache-Dateien vergangener Tage gelöscht.
 
-* `--max-retries <ANZAHL>`: Maximale Anzahl von Wiederholungsversuchen für fehlgeschlagene HTTP-Anfragen. Standard: `5`.
+* `--max-workers <ANZAHL>`: Maximale Anzahl gleichzeitiger Worker für das Abrufen von Daten. Standard: `10`.
 
-* `--min-request-delay <SEKUNDEN>`: Minimale Verzögerung in Sekunden zwischen HTTP-Anfragen (nur für Live-Abrufe). Standard: `0.1`.
+* `--max-retries <ANZAHL>`: Maximale Anzahl von Wiederholungsversuchen für fehlgeschlagene HTTP-Anfragen (z.B. 429, 5xx, Verbindungsprobleme). Standard: `5`.
 
-* `--max-schedule-retries <ANZAHL>`: Maximale Anzahl von Wiederholungsversuchen für Anwendungsfehler während des Parsens/der Generierung des Sendeplans. Standard: `2`.
+* `--min-request-delay <SEKUNDEN>`: Minimale Verzögerung in Sekunden zwischen HTTP-Anfragen (nur für Live-Abrufe). Standard: `0.05`s.
+
+* `--max-schedule-retries <ANZAHL>`: Maximale Anzahl von Wiederholungsversuchen für Anwendungsfehler während des Parsens/der Generierung des Sendeplans. Standard: `3`.
 
 ### Beispiele
 
 **Alle Kanäle für heute scrapen und XMLTV ausgeben:**
 
-```
+
 ./tvs-scraper --output-format xmltv --output-file tvspielfilm.xml --log-level INFO
 
-```
 
 **Spezifische Kanäle (ARD, ZDF) für die nächsten 3 Tage scrapen und JSON ausgeben, mit detailliertem Logging:**
 
-```
+
 ./tvs-scraper --channel-ids "ARD,ZDF" --days 3 --output-format json --output-file my_epg_data.json --verbose
 
-```
 
 **Sendeplan für einen bestimmten Tag für einen Kanal scrapen und Cache leeren:**
 
-```
-./tvs-scraper --channel-ids "PRO7" --date 20250601 --clear-cache --output-format xmltv
 
-```
+./tvs-scraper --channel-ids "PRO7" --date 20250601 --cache-clear --output-format xmltv
+
 
 **Scraper in Verbindung mit `run-scraper` und Syslog verwenden:**
 
 Standardmäßig protokolliert das `run-scraper`-Skript seine Ausgaben an Syslog. Um dies zu deaktivieren, verwenden Sie `--disable-syslog`.
 
-```
-/usr/local/bin/run-scraper
 
-```
+/usr/local/bin/run-scraper --syslog-ident my-epg-script
+
 
 (Beachten Sie, dass `--use-syslog` und `--syslog-ident` für den Python-Scraper selbst sind, während `--disable-syslog` und `--syslog-ident` für das `run-scraper`-Skript sind, wobei das Bash-Skript standardmäßig an Syslog protokolliert.)
 
+## Serverlast und Fair Use (max-workers)
+
+Die Einstellung der `max-workers` hat einen direkten Einfluss auf die Serverlast der Webseite `m.tvspielfilm.de`. Eine verantwortungsvolle Nutzung ist entscheidend, um die Verfügbarkeit der Webseite nicht zu beeinträchtigen und nicht als missbräuchliche Aktivität (z.B. Denial-of-Service-Angriff) interpretiert zu werden.
+
+* **`max-workers`:** Dieser Parameter steuert die Anzahl der gleichzeitigen Anfragen, die Ihr Scraper an den Server sendet.
+
+  * **Niedrige Werte (z.B. 1-5):** Sehr schonend für den Server, aber der Scraping-Vorgang dauert länger.
+
+  * **Hohe Werte (z.B. 10+):** Beschleunigt den Scraping-Vorgang, kann den Server aber stark belasten, insbesondere wenn er nicht für viele gleichzeitige Anfragen ausgelegt ist.
+
+* **`--min-request-delay`:** Dieser Parameter (Standard: `0.05` Sekunden) ist oft wichtiger als `max-workers` allein. Er definiert eine minimale Verzögerung zwischen den einzelnen HTTP-Anfragen. Eine Verzögerung von 0.5 bis 1.0 Sekunden oder mehr ist entscheidend, um den Server nicht zu überfordern.
+
+**Empfehlung für faires Scraping:**
+
+1.  **Beginnen Sie konservativ:** Starten Sie immer mit einer niedrigen Anzahl von Workern (z.B. 5) und einer angemessenen `min-request-delay` (z.B. 0.5 Sekunden).
+
+2.  **Beobachten Sie das Serververhalten:** Achten Sie auf Fehlermeldungen wie `HTTP Error 429 (Too Many Requests)` oder ungewöhnlich langsame Antwortzeiten. Diese sind Indikatoren für eine Überlastung.
+
+3.  **Anpassen der Parameter:**
+
+    * Wenn Sie Fehler wie 429 erhalten, erhöhen Sie die `min-request-delay` oder reduzieren Sie die `max-workers`.
+
+    * Wenn der Scraper stabil läuft und keine Probleme auftreten, können Sie die `max-workers` schrittweise erhöhen oder die `min-request-delay` leicht verringern, aber immer mit Vorsicht.
+
+4.  **`robots.txt` beachten:** Obwohl `m.tvspielfilm.de/robots.txt` keine spezifische `Crawl-delay`-Anweisung enthält, gibt sie verbotene Pfade an und schließt bestimmte Bots explizit aus. Halten Sie sich an diese Regeln.
+
+5.  **Caching nutzen:** Der aktivierte Cache reduziert die Anzahl der Live-Anfragen erheblich, was die Serverlast minimiert.
+
+Für `m.tvspielfilm.de`, eine größere Medienseite, ist ein Wert von **5 bis 10 `max-workers` in Kombination mit einer `--min-request-delay` von mindestens 0.5 Sekunden** ein fairer und angemessener Startpunkt. Der Standardwert von `max-workers` ist `10`, was einen guten Ausgangspunkt darstellt.
+
 ## Integration mit `epgd` (oder ähnlichen Systemen)
 
-Der Scraper ist darauf ausgelegt, mit dem `epgd`-Daemon zu funktionieren, der typischerweise eine `channelmap.conf` und eine `epgd.conf` verwendet.
+Der Scraper ist darauf ausgelegt, mit dem `epgd`-Daemon zu funktionieren, der typischerweise eine `channelmap.conf` und eine `epgd.conf` verwendet. **Beachten Sie, dass für die Integration mit `epgd` das [xmltv-Plugin](https://github.com/Zabrimus/epgd-plugin-xmltv) auf Ihrem System installiert und aktiviert sein muss.**
 
 ### `channelmap.conf`
 
-Die `channelmap.conf` definiert, welche Kanäle von welchem EPG-Anbieter gescrapt werden sollen. Für diesen Scraper verwenden Sie das Präfix `xmltv:` gefolgt von der Kanal-ID von TVSpielfilm.de und der `.tvs`-Endung.
+Die `channelmap.conf` definiert, welche Kanäle von welchem EPG-Anbieter gescrapt werden sollen. Für diesen Scraper verwenden Sie das Präfix `xmltv:` gefolgt von der Kanal-ID von [TVSpielfilm.de](https://m.tvspielfilm.de/sender/) und der `.tvs`-Endung.
 
 **Beispiel-Eintrag in `channelmap.conf`:**
 
-```
+
 xmltv:ARD.tvs:1 = S19.2E-1-1019-10301 // Das Erste HD
 xmltv:ZDF.tvs:1 = S19.2E-1-1011-11110 // ZDF HD
 
-```
 
 * `xmltv`: Der Quellenname, der vom `run-scraper`-Skript erkannt wird.
 
@@ -176,16 +219,15 @@ xmltv:ZDF.tvs:1 = S19.2E-1-1011-11110 // ZDF HD
 
 ### `epgd.conf`
 
-Die `epgd.conf` konfiguriert den `epgd`-Daemon selbst, **einschließlich** des Pfads zur Ausgabedatei des Scrapers und der Anzahl der Tage, die gescrapt werden sollen.
+Die `epgd.conf` konfiguriert den `epgd`-Daemon selbst, einschließlich des Pfads zur Ausgabedatei des Scrapers und der Anzahl der Tage, die gescrapt werden sollen.
 
 **Beispiel-Einträge in `epgd.conf`:**
 
-```
+
 xmltv.input = /epgd/cache/tvs_xmltv.xml
 DaysInAdvance = 7
 UpdateTime = 24
 
-```
 
 * `xmltv.input`: Der Pfad, unter dem der Scraper die XMLTV-Datei ablegt.
 
@@ -205,12 +247,11 @@ Das bereitgestellte `run-scraper`-Skript automatisiert den Aufruf des Python-Scr
 
 ## Fehlerbehebung
 
-* **`EOFError: Ran out of input` oder `sqlite3.InterfaceError: bad parameter or other API misuse`:** Diese Fehler deuten auf einen beschädigten Cache-Eintrag hin. Führen Sie den Scraper mit der Option `--clear-cache` aus, um den Cache zu leeren und die Daten neu abzurufen.
+* **`EOFError: Ran out of input` oder `sqlite3.InterfaceError: bad parameter or other API misuse`:** Diese Fehler deuten auf einen beschädigten Cache-Eintrag hin. Führen Sie den Scraper mit der Option `--cache-clear` aus, um den Cache zu leeren und die Daten neu abzurufen.
 
-  ```
-  ./tvs-scraper --clear-cache [weitere Optionen]
-  
-  ```
+    ```
+    ./tvs-scraper --cache-clear [weitere Optionen]
+    ```
 
 * **Keine Daten extrahiert / Leere Ausgabedatei:**
 
@@ -234,15 +275,15 @@ Der Scraper ist in Python geschrieben und verwendet `requests` für HTTP-Anfrage
 
 * **`TvsLeanScraper` Klasse:** Kapselt die gesamte Scraping-Logik.
 
-* **`fetch_url` Methode:** Verantwortlich für das Abrufen von URLs, Caching und Fehlerbehandlung auf HTTP-Ebene.
+* **`fetch_url` Methode:** Verantwortlich für das Abrufen von URLs und die Fehlerbehandlung auf HTTP-Ebene. Sie verwendet jetzt `functools.lru_cache` für das In-Memory-Caching und implementiert einen benutzerdefinierten dateibasierten Caching-Mechanismus mit Inhaltskonsistenzprüfungen.
 
-* **`parse_sender_list` Methode:** Extrahiert die Liste der Kanäle.
+* **`_get_channel_list` Methode:** Extrahiert die Liste der Kanäle und integriert sich mit dem dateibasierten Cache für Kanallistendaten.
 
-* **`parse_channel_schedule` Methode:** Extrahiert Programminformationen für einen bestimmten Kanal und Tag.
+* **`_get_schedule_for_channel_and_date` Methode:** Extrahiert Programminformationen für einen bestimmten Kanal und Tag und integriert sich mit dem dateibasierten Cache für tägliche Sendeplandaten.
 
-* **`parse_detail_page` Methode:** Extrahiert zusätzliche Details von den Programm-Detailseiten.
+* **`parse_detail_page` Methode:** Extrahiert zusätzliche Details von den Programm-Detailseiten und nutzt `functools.lru_cache` für das In-Memory-Caching von Detailseiteninhalten.
 
-* **`_process_channel_day_schedule` Methode:** Eine Hilfsmethode, die den Abruf und das Parsen für einen Tag und Kanal orchestriert, einschließlich der anwendungsspezifischen Retry-Logik.
+* **`_process_channel_day_schedule` Methode:** Eine Hilfsmethode, die den Abruf und das Parsen für einen Tag und Kanal orchestriert, einschließlich der anwendungsspezifischen Retry-Logik und der Interaktion mit dem dateibasierten Cache.
 
 * **`generate_xmltv` Funktion:** Erstellt die XMLTV-Ausgabedatei.
 

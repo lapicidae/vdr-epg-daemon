@@ -1,81 +1,93 @@
 #!/usr/bin/env python3
-import requests
-import requests_cache
-from datetime import datetime, timedelta, timezone
-import re
-import logging
-import json
-import argparse
-from xml.sax.saxutils import XMLGenerator
-import random
-import os
-import time
-import shutil
-import tempfile
-import concurrent.futures
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import logging.handlers
-import sqlite3
-import lxml.html
-from lxml.cssselect import CSSSelector
-import io
+"""
+A lean web scraper for TVSpielfilm.de to extract TV program data.
 
-# --- Configuration ---
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
-    'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.88 Mobile Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-]
+This script uses the `requests` library for HTTP requests and `lxml.html`
+with `cssselect` for efficient HTML parsing. It supports custom file-based
+caching for HTTP responses and processed JSON data, parallel fetching
+using a thread pool, and robust retry mechanisms for network and
+application-level errors. It generates EPG data in XMLTV or JSON format.
+"""
+import argparse
+import concurrent.futures
+import functools
+import json
+import logging
+import lxml.cssselect
+import lxml.html
+import os
+import random
+import re
+import requests
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import zlib
+from datetime import datetime, timedelta, timezone
+from requests.adapters import HTTPAdapter
+from typing import List, Dict, Optional, Any, Tuple
+from urllib3.util.retry import Retry
+from xml.sax.saxutils import XMLGenerator
 
 logger = logging.getLogger(__name__)
 
-# --- Global/Default Variables ---
-BASE_URL = "https://m.tvspielfilm.de"
-DEFAULT_DAYS = 0
-DEFAULT_IMG_SIZE = "600"
-CHECK_IMG_DEFAULT = False
-MAX_DAYS_TO_SCRAPE = 13
+DEFAULT_DAYS: int = 0
+DEFAULT_IMG_SIZE: str = "600"
+CHECK_IMG_DEFAULT: bool = False
+MAX_DAYS_TO_SCRAPE: int = 13
 
-# Cache constants
-DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60
-DEFAULT_CACHE_SUBDIR = "tvs-cache"
+DEFAULT_CACHE_SUBDIR: str = "tvs-cache"
+PROCESSED_DATA_CACHE_SUBDIR: str = "processed-data"
+DEFAULT_DISABLE_CACHE: bool = False
+DEFAULT_CACHE_TTL_SECONDS: int = 6 * 60 * 60
 
-# Parallelization and Backoff constants
-DEFAULT_MAX_WORKERS = 5
-DEFAULT_MAX_RETRIES = 5
-RETRY_STATUS_FORCELIST = [429, 500, 502, 503, 504]
-RETRY_BACKOFF_FACTOR = 0.5
-RETRY_ON_CONNECTION_ERRORS = True
+CHANNEL_LIST_CACHE_FILE: str = "channels.json"
 
-DEFAULT_OUTPUT_FORMAT = 'xmltv'
-DEFAULT_SYSLOG_TAG = 'tvs-scraper'
-DEFAULT_MIN_REQUEST_DELAY = 0.1
-DEFAULT_MAX_SCHEDULE_RETRIES = 2
+RANGE_SAMPLE_SIZE: int = 1024
+NUMBER_OF_SAMPLES: int = 3
 
+DEFAULT_MAX_WORKERS: int = 10
+DEFAULT_MAX_RETRIES: int = 5
+RETRY_STATUS_FORCELIST: List[int] = [429, 500, 502, 503, 504]
+RETRY_BACKOFF_FACTOR: float = 1.0
+RETRY_ON_CONNECTION_ERRORS: bool = True
 
-# Compiled Regex patterns
+DEFAULT_OUTPUT_FORMAT: str = 'xmltv'
+DEFAULT_SYSLOG_TAG: str = 'tvs-scraper'
+DEFAULT_MIN_REQUEST_DELAY: float = 0.05
+DEFAULT_MAX_SCHEDULE_RETRIES: int = 3
+
+USER_AGENTS: List[str] = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15',
+]
+
+BASE_URL: str = "https://m.tvspielfilm.de"
+
 re_cast_entry_match = re.compile(r'(.+?)\s*\((.+?)\)')
-
-# Regex to find characters NOT allowed in XML 1.0 documents.
-# This pattern matches C0 control characters (excluding tab, newline, carriage reform),
-# DEL, C1 control characters (often from Windows-1252 misinterpretation),
-# and specific Unicode "non-characters" (FDD0-FDEF, FFFE, FFFF).
-# It does NOT remove valid XML whitespace characters (\t, \n, \r).
 _INVALID_XML_CHARS_PATTERN = re.compile(
     '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\uFDD0-\uFDEF\uFFFE\uFFFF]'
 )
 
-def _sanitize_xml_string(text):
-    """Removes characters from a string that are invalid in XML 1.0 documents.
 
-    :param text: The input string to sanitize.
-    :type text: str or None
-    :return: The sanitized string, or None if the input was None.
-    :rtype: str or None
+def _sanitize_xml_string(text: Optional[str]) -> Optional[str]:
+    """
+    Removes characters from a string that are invalid in XML 1.0 documents.
+
+    :param text: The input string.
+    :type text: Optional[str]
+    :returns: The sanitized string, or None if input was None.
+    :rtype: Optional[str]
     """
     if text is None:
         return None
@@ -84,80 +96,104 @@ def _sanitize_xml_string(text):
 
 
 class TvsLeanScraper:
-    """A lean web scraper for TVSpielfilm.de to extract TV program data.
-
-    This scraper uses requests and lxml.html for HTML parsing, supports
-    caching with revalidation, parallel fetching, and handles rate limiting
-    with exponential backoff.
     """
-    def __init__(self, channel_ids=None, days=None, img_size=None, check_img=None, start_date_str=None, enable_cache=True, cache_ttl=DEFAULT_CACHE_TTL_SECONDS, cache_dir_path=None, max_workers=DEFAULT_MAX_WORKERS, clean_stale_cache=True, max_retries=DEFAULT_MAX_RETRIES, channel_ids_file=None, min_request_delay=DEFAULT_MIN_REQUEST_DELAY, max_schedule_retries=DEFAULT_MAX_SCHEDULE_RETRIES):
-        """Initializes the TvsLeanScraper instance.
+    Encapsulates the scraping logic for TVSpielfilm.de.
 
-        :param channel_ids: Comma-separated string of channel IDs to target. If None, all channels are scraped.
-        :type channel_ids: str, optional
-        :param days: Number of days to scrape, starting from `start_date`.
-        :type days: int, optional
+    Handles fetching HTML, parsing channel lists and program schedules,
+    extracting detailed program information, and managing caching and retries.
+    """
+    def __init__(self, channel_ids: Optional[str] = None, days: Optional[int] = None, img_size: Optional[str] = None, check_img: Optional[bool] = None, start_date_str: Optional[str] = None,
+                 cache_dir_path: Optional[str] = None, max_workers: int = DEFAULT_MAX_WORKERS, max_retries: int = DEFAULT_MAX_RETRIES,
+                 channel_ids_file: Optional[str] = None, min_request_delay: float = DEFAULT_MIN_REQUEST_DELAY,
+                 max_schedule_retries: int = DEFAULT_MAX_SCHEDULE_RETRIES,
+                 disable_cache: bool = DEFAULT_DISABLE_CACHE, cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
+                 use_etag_cache_check: bool = False, keep_past_cache: bool = False,
+                 cache_clear: bool = False):
+        """
+        Initializes the TvsLeanScraper instance.
+
+        :param channel_ids: Comma-separated string of channel IDs to scrape.
+        :type channel_ids: Optional[str]
+        :param days: Number of days to scrape.
+        :type days: Optional[int]
         :param img_size: Desired image size ("300" or "600").
-        :type img_size: str, optional
-        :param check_img: If True, performs a HEAD request to validate image URLs.
-        :type check_img: bool, optional
-        :param start_date_str: Specific date to start scraping from, in 'YYYYMMDD' format.
-        :type start_date_str: str, optional
-        :param enable_cache: If True, caching of HTTP responses is enabled.
-        :type enable_cache: bool
+        :type img_size: Optional[str]
+        :param check_img: Boolean to enable/disable image URL validity checks.
+        :type check_img: Optional[bool]
+        :param start_date_str: Specific date to scrape inYYYYMMDD format.
+        :type start_date_str: Optional[str]
+        :param cache_dir_path: Custom directory for cache files.
+        :type cache_dir_path: Optional[str]
+        :param max_workers: Maximum number of concurrent workers.
+        :type max_workers: int
+        :param max_retries: Maximum number of retries for failed HTTP requests.
+        :type max_retries: int
+        :param channel_ids_file: Path to a file containing comma-separated channel IDs.
+        :type channel_ids_file: Optional[str]
+        :param min_request_delay: Minimum delay in seconds between HTTP requests.
+        :type min_request_delay: float
+        :param max_schedule_retries: Maximum retries for application-level schedule parsing errors.
+        :type max_schedule_retries: int
+        :param disable_cache: If True, disables processed JSON data caching.
+        :type disable_cache: bool
         :param cache_ttl: Cache Time To Live in seconds.
         :type cache_ttl: int
-        :param cache_dir_path: Custom directory for cache files.
-        :type cache_dir_path: str, optional
-        :param max_workers: Maximum number of concurrent workers for fetching data.
-        :type max_workers: int
-        :param clean_stale_cache: If True, expired cache files are automatically removed.
-        :type clean_stale_cache: bool
-        :param max_retries: Maximum number of retry attempts for failed HTTP requests.
-        :type max_retries: int
-        :param channel_ids_file: Path to a file containing a comma-separated list of channel IDs. If provided, this option takes precedence over --channel-ids.
-        :type channel_ids_file: str, optional
-        :param min_request_delay: Minimum delay in seconds between HTTP requests for live fetches.
-        :type min_request_delay: float
-        :param max_schedule_retries: Maximum retries for application-level schedule generation errors.
-        :type max_schedule_retries: int
+        :param use_etag_cache_check: If True, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency. If False (default), the Content-Length and Range-Request CRC32 comparison method is used.
+        :type use_etag_cache_check: bool
+        :param keep_past_cache: If True, prevents automatic deletion of past days' cache files.
+        :type keep_past_cache: bool
+        :param cache_clear: If True, clears all caches before starting.
+        :type cache_clear: bool
+        :raises NotADirectoryError: If the specified cache path exists but is not a directory.
         """
-        self.target_sourceids = None
+        self.target_sourceids: Optional[set[str]] = None
         if channel_ids_file:
             try:
-                with open(channel_ids_file, 'r') as f:
-                    file_content = f.read().strip()
+                with open(channel_ids_file, 'r', encoding='utf-8') as f:
+                    file_content: str = f.read().strip()
                 if file_content:
                     self.target_sourceids = {cid.strip().upper() for cid in file_content.split(',') if cid.strip()}
-                    logger.info(f"Targeting specific channels from file '{channel_ids_file}': {self.target_sourceids}")
+                    logger.info(f"Target channels from file '{channel_ids_file}': {self.target_sourceids}")
                 else:
-                    logger.warning(f"Channel IDs file '{channel_ids_file}' is empty. Crawling all found channels.")
+                    logger.warning(f"Channel IDs file '{channel_ids_file}' is empty. All found channels will be crawled.")
             except FileNotFoundError:
-                logger.error(f"Channel IDs file '{channel_ids_file}' not found. Crawling all found channels.")
+                logger.error(f"Channel IDs file '{channel_ids_file}' not found. All found channels will be crawled.")
             except Exception as e:
-                logger.error(f"Error reading channel IDs from file '{channel_ids_file}': {e}. Crawling all found channels.")
+                logger.error(f"Error reading channel IDs from file '{channel_ids_file}': {e}. All found channels will be crawled.")
         elif channel_ids:
             if isinstance(channel_ids, str):
                 self.target_sourceids = {cid.strip().upper() for cid in channel_ids.split(',') if cid.strip()}
-                logger.info(f"Targeting specific channels: {self.target_sourceids}")
+                logger.info(f"Target channels from argument: {self.target_sourceids}")
             else:
                 logger.warning(f"Invalid ID type for channel_ids: {type(channel_ids)}. Expected string. Crawling all found channels.")
         else:
-            logger.info("No specific channels targeted. Crawling all found channels.")
+            logger.debug("No specific channels targeted. Crawling all found channels.")
 
-        self.start_date = None
+        self.is_specific_date_set: bool = False
+        self.start_date: datetime.date = datetime.now().date()
+
         if start_date_str:
+            self.is_specific_date_set = True
             try:
                 self.start_date = datetime.strptime(start_date_str, '%Y%m%d').date()
-                self.days_to_scrape = 1
-                logger.info(f"Scraping specific date: {self.start_date}. 'days' argument will be ignored.")
+                self.days_to_scrape: int = 1
             except ValueError:
                 logger.error(f"Invalid DATE format: {start_date_str}. Expected %Y%m%d. Using current date and 'days' argument.")
-                self.start_date = datetime.now().date()
                 self.days_to_scrape = int(days) if days is not None else DEFAULT_DAYS
         else:
-            self.start_date = datetime.now().date()
             self.days_to_scrape = int(days) if days is not None else DEFAULT_DAYS
+
+        today = datetime.now().date()
+        earliest_allowed_date = today - timedelta(days=1)
+        latest_allowed_date = today + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
+
+        if self.is_specific_date_set:
+            if self.start_date < earliest_allowed_date:
+                logger.error(f"Error: The specified date '{self.start_date.strftime('%Y%m%d')}' is too far in the past. Only dates from '{earliest_allowed_date.strftime('%Y%m%d')}' (yesterday) are allowed.")
+                sys.exit(1)
+            if self.start_date > latest_allowed_date:
+                logger.error(f"Error: The specified date '{self.start_date.strftime('%Y%m%d')}' is too far in the future. Only dates up to '{latest_allowed_date.strftime('%Y%m%d')}' are allowed (maximum {MAX_DAYS_TO_SCRAPE} days from today).")
+                sys.exit(1)
 
         if self.days_to_scrape < 1:
             logger.info(f"DAYS value {self.days_to_scrape} is less than 1. Setting to 1 day (today).")
@@ -166,63 +202,77 @@ class TvsLeanScraper:
             logger.warning(f"DAYS value {self.days_to_scrape} exceeds maximum allowed ({MAX_DAYS_TO_SCRAPE}). Setting to {MAX_DAYS_TO_SCRAPE} days.")
             self.days_to_scrape = MAX_DAYS_TO_SCRAPE
 
-        self.img_size = img_size if img_size in ["300", "600"] else DEFAULT_IMG_SIZE
-        self.check_img = bool(check_img) if check_img is not None else CHECK_IMG_DEFAULT
+        self.img_size: str = img_size if img_size in ["300", "600"] else DEFAULT_IMG_SIZE
+        self.check_img: bool = bool(check_img) if check_img is not None else CHECK_IMG_DEFAULT
+        if self.check_img:
+            logger.debug("Image URL validity checks (--img-check) are ENABLED. This may increase scraping time.")
+        else:
+            logger.debug("Image URL validity checks (--img-check) are DISABLED.")
 
-        self.enable_cache = enable_cache
-        self.cache_ttl = cache_ttl
-        self.clean_stale_cache_enabled = clean_stale_cache 
+        self.cache_dir: str = cache_dir_path if cache_dir_path else os.path.join(tempfile.gettempdir(), DEFAULT_CACHE_SUBDIR)
 
-        self.cache_dir = cache_dir_path if cache_dir_path else os.path.join(tempfile.gettempdir(), DEFAULT_CACHE_SUBDIR)
-        os.makedirs(self.cache_dir, exist_ok=True)
-        
-        retry_strategy = Retry(
+        if os.path.exists(self.cache_dir):
+            if not os.path.isdir(self.cache_dir):
+                logger.error(f"Cache path '{self.cache_dir}' exists but is not a directory. Please resolve this conflict.")
+                raise NotADirectoryError(f"Cache path '{self.cache_dir}' exists but is not a directory.")
+        else:
+            os.makedirs(self.cache_dir, exist_ok=True)
+
+        self.user_agents: List[str] = USER_AGENTS
+
+        self.max_workers: int = max_workers
+        pool_size: int = max(self.max_workers, 1) * 2
+
+        retry_strategy: Retry = Retry(
             total=max_retries,
             backoff_factor=RETRY_BACKOFF_FACTOR,
             status_forcelist=RETRY_STATUS_FORCELIST,
             allowed_methods=["GET", "HEAD"],
             raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        adapter: HTTPAdapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=pool_size,
+            pool_maxsize=pool_size
+        )
 
-        def should_cache(response):
-            """Determines if a response should be cached based on its Content-Type header.
-            Only caches HTML content.
+        self.session: requests.Session = requests.Session()
+        logger.debug("Using standard requests.Session for HTTP fetches.")
 
-            :param response: The HTTP response object.
-            :type response: requests.Response
-            :return: True if the response should be cached, False otherwise.
-            :rtype: bool
-            """
-            content_type = response.headers.get('Content-Type', '')
-            return 'text/html' in content_type
-
-        if self.enable_cache:
-            self.session = requests_cache.CachedSession(
-                cache_name=os.path.join(self.cache_dir, 'tvs_cache.sqlite'),
-                backend='sqlite',
-                expire_after=self.cache_ttl,
-                allowable_methods=['GET', 'HEAD'],
-                use_compression=True,
-                filter_fn=should_cache,
-                sqlite_connection_kwargs={'timeout': 30},
-                fast_save=True
-            )
-            logger.debug(f"Caching enabled with requests-cache (SQLite backend, compression enabled). Cache file: {os.path.join(self.cache_dir, 'tvs_cache.sqlite')}")
-        else:
-            self.session = requests.Session()
-            logger.info("Caching disabled.")
-        
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         logger.debug(f"Main session retry strategy configured: Max retries={max_retries}, Backoff factor={RETRY_BACKOFF_FACTOR}, Retrying on status codes={RETRY_STATUS_FORCELIST}.")
+        logger.debug(f"HTTPAdapter connection pool size set to: {pool_size}")
 
-        self.max_workers = max_workers
-        self.min_request_delay = min_request_delay
-        self.max_schedule_retries = max_schedule_retries
-        self.logged_channel_start_messages = set()
+        self.min_request_delay: float = min_request_delay
+        self.max_schedule_retries: int = max_schedule_retries
 
-        # Compiled Regex patterns
+        self.enable_cache: bool = not disable_cache
+        self.cache_ttl: int = cache_ttl
+        self.processed_data_cache_base_dir: str = os.path.join(self.cache_dir, PROCESSED_DATA_CACHE_SUBDIR)
+        self.use_etag_cache_check: bool = use_etag_cache_check
+        self.keep_past_cache: bool = bool(keep_past_cache)
+        self.cache_clear_requested: bool = cache_clear
+
+        if self.enable_cache:
+            os.makedirs(self.processed_data_cache_base_dir, exist_ok=True)
+            logger.debug(f"Processed data cache enabled. Path: {self.processed_data_cache_base_dir}, TTL: {self.cache_ttl}s.")
+            if self.use_etag_cache_check:
+                logger.debug("Simple conditional GET (ETag/Last-Modified/304) for cache consistency is ENABLED.")
+            else:
+                logger.debug("Content-Length and Range-Request CRC32 comparison for cache consistency is ENABLED (default method).")
+            if self.keep_past_cache:
+                logger.debug("Keeping past days' cache files is ENABLED (--keep-past-cache).")
+            else:
+                logger.debug("Deleting past days' cache files is ENABLED by default (no --keep-past-cache).")
+        else:
+            logger.debug("Processed data cache disabled.")
+
+        if self.cache_clear_requested:
+            logger.info("Explicit --cache-clear requested. All caches will be invalidated/ignored.")
+
+        self.stop_event = threading.Event()
+
         self.re_source_id_html = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
         self.re_image_url_match = re.compile(r"url\(['\"]?(.*?)['\"]?\)")
         self.re_image_base_path_match = re.compile(r'(.*?)_(\d+)\.jpg$')
@@ -231,205 +281,538 @@ class TvsLeanScraper:
         self.re_duration_minutes_match = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
         self.re_fsk_match = re.compile(r'(\d+)')
         self.re_rating_class_match = re.compile(r'rating-(\d+)')
+        self.re_adsc_sparte_match = re.compile(r'"adsc_sparte":"([^"]+)"')
 
-        # Pre-compiled CSS Selectors for lxml for performance.
-        self.selector_sender_links = CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
-        self.selector_li_elements = CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
-        self.selector_title_tag = CSSSelector('strong.tv-tip-heading span.title')
-        self.selector_detail_link_tag = CSSSelector('div.image-text-holder a.flex-row.js-track-link')
-        self.selector_image_div = CSSSelector('div.program-image div.default-image')
-        self.selector_description_section = CSSSelector('section.broadcast-detail__description')
-        self.selector_short_desc_tag = CSSSelector('p.headline')
-        self.selector_long_desc_paragraphs = CSSSelector('p:not(.headline)')
-        self.selector_genre_underline_tag = CSSSelector('div.stage-underline.gray span.text-row')
-        self.selector_infos_container = CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_genre_dt_infos = CSSSelector('dt')
-        self.selector_genre_tag_general = CSSSelector('div.genre-info span.genre-text')
-        self.selector_genre_time_tag_schedule = CSSSelector('div.genre span.genre-time')
-        self.selector_infos_dl = CSSSelector('dl')
-        self.selector_infos_dt = CSSSelector('dt')
-        self.selector_infos_dd = CSSSelector('dd')
-        self.selector_headline_infos = CSSSelector('p.headline')
-        self.selector_headline_cast = CSSSelector('p.headline')
-        self.selector_headline_crew = CSSSelector('p.headline')
-        self.selector_cast_container = CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_cast_dl = CSSSelector('dl')
-        self.selector_cast_dt = CSSSelector('dt')
-        self.selector_crew_container = CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_crew_dl = CSSSelector('dl')
-        self.selector_crew_dt = CSSSelector('dt')
-        self.selector_crew_dd = CSSSelector('dd')
-        self.selector_content_rating_section = CSSSelector('section.content-rating')
-        self.selector_num_rating_div = CSSSelector('div.content-rating__rating-genre__thumb')
-        self.selector_txt_rating_tag = CSSSelector('blockquote.content-rating__rating-genre__conclusion-quote p')
-        self.selector_rating_list_items = CSSSelector('ul.content-rating__rating-genre__list li.content-rating__rating-genre__list-item')
-        self.selector_rating_label = CSSSelector('span.content-rating__rating-genre__list-item__label')
-        self.selector_rating_span = CSSSelector('span.content-rating__rating-genre__list-item__rating')
-        self.selector_imdb_rating_tag = CSSSelector('div.content-rating__imdb-rating__rating-value')
+        self.selector_sender_links: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
+        self.selector_li_elements: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
+        self.selector_title_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('strong.tv-tip-heading span.title')
+        self.selector_detail_link_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.image-text-holder a.flex-row.js-track-link')
+        self.selector_image_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.program-image div.default-image')
+        self.selector_description_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.broadcast-detail__description')
+        self.selector_short_desc_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_long_desc_paragraphs: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p:not(.headline)')
+        self.selector_genre_underline_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.stage-underline.gray span.text-row')
+        self.selector_infos_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_genre_dt_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_genre_tag_general: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre-info span.genre-text')
+        self.selector_genre_time_tag_schedule: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre span.genre-time')
+        self.selector_infos_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_infos_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_infos_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
+        self.selector_headline_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_headline_cast: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_headline_crew: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_cast_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_cast_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_cast_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_crew_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_crew_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_crew_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_crew_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
+        self.selector_content_rating_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.content-rating')
+        self.selector_num_rating_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__rating-genre__thumb')
+        self.selector_txt_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('blockquote.content-rating__rating-genre__conclusion-quote p')
+        self.selector_rating_list_items: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('ul.content-rating__rating-genre__list li.content-rating__rating-genre__list-item')
+        self.selector_rating_label: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('span.content-rating__rating-genre__list-item__label')
+        self.selector_rating_span: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('span.content-rating__rating-genre__list-item__rating')
+        self.selector_imdb_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__imdb-rating__rating-value')
 
-
-    def _build_schedule_url(self, channel_url, current_date):
-        """Constructs the schedule URL for a given channel and date.
+    def _build_schedule_url(self, channel_url: str, current_date: datetime.date) -> str:
+        """
+        Constructs the schedule URL for a given channel and date.
 
         :param channel_url: Base URL of the channel.
         :type channel_url: str
         :param current_date: The date for which to build the schedule URL.
         :type current_date: datetime.date
-        :return: The complete schedule URL.
+        :returns: The complete schedule URL.
         :rtype: str
         """
-        date_str = current_date.strftime('%Y-%m-%d')
+        date_str: str = current_date.strftime('%Y-%m-%d')
         return f"{channel_url}?date={date_str}"
 
-    def _get_formatted_image_url(self, image_base_path, img_size):
-        """Constructs the full image URL based on the base path and desired size.
+    def _get_formatted_image_url(self, image_base_path: Optional[str], img_size: str) -> Optional[str]:
+        """
+        Constructs the full image URL based on the base path and desired size.
 
         :param image_base_path: The base path of the image without size or extension.
-        :type image_base_path: str
+        :type image_base_path: Optional[str]
         :param img_size: The desired image size ("300" or "600").
         :type img_size: str
-        :return: The formatted image URL, or None if `image_base_path` is None.
-        :rtype: str or None
+        :returns: The formatted image URL, or None if `image_base_path` is None.
+        :rtype: Optional[str]
         """
         if image_base_path:
             return f"{image_base_path}_{img_size}.jpg"
         return None
 
-    def fetch_url(self, url, allow_redirects=True):
-        """Sends an HTTP GET request to the given URL using the configured session.
+    @functools.lru_cache(maxsize=128)
+    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, cached_sample_hashes: Optional[Tuple[int, ...]] = None, allow_redirects: bool = True) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]]]:
+        """
+        Sends an HTTP GET request to the given URL using the configured session.
 
         Handles HTTP status codes, timeouts, and retries. Applies a delay only for
-        live (non-cached) requests to be polite.
+        live (non-cached) requests to be polite. Implements Conditional GET using ETag and Last-Modified headers.
+        Also implements Content-Length and Range-Request hash comparison for cache consistency.
 
         :param url: The URL to fetch.
         :type url: str
+        :param etag: The ETag from a previous response, for conditional GET.
+        :type etag: Optional[str]
+        :param last_modified: The Last-Modified header from a previous response, for conditional GET.
+        :type last_modified: Optional[str]
+        :param cached_content_length: The Content-Length from the last cached response.
+        :type cached_content_length: Optional[int]
+        :param cached_sample_hashes: Tuple of CRC32 hashes of content samples from the last cached response.
+        :type cached_sample_hashes: Optional[Tuple[int, ...]]
         :param allow_redirects: Whether to follow HTTP redirects. Defaults to True.
         :type allow_redirects: bool
-        :return: The response object if successful, None otherwise.
-        :rtype: requests.Response or None
+        :returns: A tuple (response_content, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes).
+                  response_content is None if 304 Not Modified or if content is semantically identical.
+                  fetched_content_length and fetched_sample_hashes are for the *newly fetched* content.
+                  Returns (None, None, None, None, None) if request fails.
+        :rtype: Tuple[Optional[str], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]]]
         """
-        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting fetch for {url}.")
+            return None, None, None, None, None
 
-        # Outer loop for retrying after a cache corruption error
-        for _ in range(2):
+        headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
+
+        if self.cache_clear_requested:
+            logger.debug(f"Performing full GET for {url} (explicit --cache-clear requested).")
             try:
-                response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
+                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
+                if self.stop_event.is_set():
+                    return None, None, None, None, None
+                time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
                 response.raise_for_status()
 
-                if response.from_cache:
-                    logger.debug(f"Served from cache: {url}")
-                elif response.status_code == 304:
-                    logger.debug(f"Resource {url} not modified. Using cached content (requests-cache handled 304).")
-                    time.sleep(0.05)
-                else:
-                    logger.debug(f"Fetched live: {url}")
-                    time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
-                
-                return response
+                new_etag: Optional[str] = response.headers.get('ETag')
+                new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+                fetched_content_length: int = len(response.content)
+                fetched_sample_hashes_list: List[int] = []
+                if fetched_content_length > 0:
+                    sample_ranges = []
+                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                        sample_ranges.append((middle_start, middle_end))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE:
+                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                        sample_ranges.append((last_start, fetched_content_length - 1))
+                    sample_ranges = sorted(list(set(sample_ranges)))
+                    for start, end in sample_ranges:
+                        sample_content: bytes = response.content[start : end + 1]
+                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
 
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 404:
-                    logger.warning(f"HTTP Error 404: {url} - {e.response.reason}")
-                elif e.response.status_code == 403:
-                    logger.warning(f"HTTP Error 403 (Forbidden): {url} - {e.response.reason}")
-                else:
-                    logger.error(f"HTTP Error for {url} after retries: {e}")
-                return None
-            except requests.exceptions.Timeout as e:
-                logger.error(f"Request Timeout for {url} after retries: {e}")
-                return None
-            except requests.exceptions.ConnectionError as e:
-                logger.error(f"Connection Error for {url} after retries: {e}")
-                return None
-            except (EOFError, sqlite3.InterfaceError) as e: # Catch specific cache corruption errors
-                logger.warning(f"Cache corruption detected for {url}: {e}. Clearing entry and retrying fetch.")
-                try:
-                    self.session.cache.delete(url) # Delete the corrupted entry
-                    logger.info(f"Cleared corrupted cache entry for: {url}")
-                except Exception as cache_del_exc:
-                    logger.error(f"Failed to delete corrupted cache entry for {url}: {cache_del_exc}")
-                # Loop will retry the fetch. If it fails again, it will exit the loop.
-                time.sleep(0.1) # Small delay before immediate retry to avoid hammering
+                logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}")
+                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
             except requests.exceptions.RequestException as e:
-                logger.error(f"An unexpected RequestException occurred for {url}: {e}")
-                return None
-        
-        logger.error(f"Failed to fetch {url} after retrying due to cache corruption.")
-        return None # Return None if both attempts fail
+                logger.error(f"Request failed for {url} (due to --cache-clear): {e}")
+                return None, None, None, None, None
 
-    def parse_sender_list(self, html_content):
-        """Parses the list of channels from the main sender page (m.tvspielfilm.de/sender/)
+        if self.use_etag_cache_check:
+            logger.debug(f"Simple conditional GET (ETag/Last-Modified/304) enabled for {url}.")
+            try:
+                if etag:
+                    headers['If-None-Match'] = etag
+                if last_modified:
+                    headers['If-Modified-Since'] = last_modified
+
+                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
+                if self.stop_event.is_set():
+                    return None, None, None, None, None
+                time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
+
+                if response.status_code == 304:
+                    logger.debug(f"Resource {url} not modified (304). Using cached data.")
+                    return None, etag, last_modified, cached_content_length, cached_sample_hashes
+
+                response.raise_for_status()
+                new_etag: Optional[str] = response.headers.get('ETag')
+                new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+                fetched_content_length: int = len(response.content)
+                fetched_sample_hashes_list: List[int] = []
+
+                if fetched_content_length > 0:
+                    sample_ranges = []
+                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                        sample_ranges.append((middle_start, middle_end))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE:
+                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                        sample_ranges.append((last_start, fetched_content_length - 1))
+                    sample_ranges = sorted(list(set(sample_ranges)))
+                    for start, end in sample_ranges:
+                        sample_content: bytes = response.content[start : end + 1]
+                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
+
+
+                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Request failed for {url} (simple conditional GET mode): {e}")
+                return None, None, None, None, None
+
+        current_content_length: int = 0
+        new_etag: Optional[str] = etag
+        new_last_modified: Optional[str] = last_modified
+
+        head_failed_reason: Optional[str] = None
+        try:
+            head_response: requests.Response = self.session.head(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
+            if self.stop_event.is_set():
+                return None, None, None, None, None
+            head_response.raise_for_status()
+            current_content_length = int(head_response.headers.get('Content-Length', 0))
+            new_etag = head_response.headers.get('ETag', etag)
+            new_last_modified = head_response.headers.get('Last-Modified', last_modified)
+            logger.debug(f"HEAD request for {url}: Content-Length={current_content_length}, ETag={new_etag}, Last-Modified={new_last_modified}")
+        except requests.exceptions.RequestException as e:
+            head_failed_reason = f"HEAD request failed: {e}"
+            logger.debug(f"HEAD request failed for {url}: {e}. Will attempt full GET.")
+            current_content_length = 0
+
+        content_length_mismatch: bool = False
+        samples_differ: bool = False
+        cache_info_missing: bool = False
+
+        if not self.enable_cache:
+            cache_info_missing = True
+            logger.debug(f"Cache disabled for {url}. Forcing full GET.")
+        elif cached_content_length is None or cached_sample_hashes is None:
+            cache_info_missing = True
+            logger.debug(f"No cache info (length or samples) available for {url}. Forcing full GET.")
+        elif current_content_length == 0 and head_failed_reason:
+            content_length_mismatch = True
+            logger.debug(f"HEAD request failed for {url} ({head_failed_reason}). Forcing full GET.")
+        elif current_content_length != cached_content_length:
+            content_length_mismatch = True
+            logger.debug(f"Content-Length for {url} differs (cached: {cached_content_length}, current: {current_content_length}). Forcing full GET.")
+        elif cached_content_length is not None and current_content_length > 0 and cached_sample_hashes:
+            logger.debug(f"Content-Length for {url} matches cached. Performing range requests.")
+
+            sample_ranges: List[Tuple[int, int]] = []
+            if current_content_length > 0:
+                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, current_content_length - 1)))
+
+                if current_content_length > RANGE_SAMPLE_SIZE * 2:
+                    middle_start = (current_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                    sample_ranges.append((middle_start, middle_end))
+
+                if current_content_length > RANGE_SAMPLE_SIZE:
+                    last_start = current_content_length - RANGE_SAMPLE_SIZE
+                    sample_ranges.append((last_start, current_content_length - 1))
+
+                sample_ranges = sorted(list(set(sample_ranges)))
+
+            current_sample_hashes: List[int] = []
+
+            for i, (start, end) in enumerate(sample_ranges):
+                if self.stop_event.is_set():
+                    logger.debug(f"Stop event set. Aborting range request for {url}.")
+                    return None, None, None, None, None
+                range_header: str = f"bytes={start}-{end}"
+                range_headers: Dict[str, str] = {**headers, 'Range': range_header}
+
+                try:
+                    range_response: requests.Response = self.session.get(url, headers=range_headers, timeout=10)
+                    range_response.raise_for_status()
+                    current_hash: int = zlib.crc32(range_response.content)
+                    current_sample_hashes.append(current_hash)
+
+                    if i < len(cached_sample_hashes) and current_hash != cached_sample_hashes[i]:
+                        samples_differ = True
+                        logger.debug(f"Sample {i} for {url} differs. Forcing full GET.")
+                        break
+                except requests.exceptions.RequestException as e:
+                    samples_differ = True
+                    logger.debug(f"Range request for {url} ({range_header}) failed: {e}. Forcing full GET.")
+                    break
+        else:
+            logger.debug(f"Unexpected cache state for {url}. Forcing full GET.")
+
+        if content_length_mismatch or samples_differ or cache_info_missing:
+            reason_for_full_get = []
+            if content_length_mismatch:
+                reason_for_full_get.append(f"Content-Length mismatch (cached: {cached_content_length}, current: {current_content_length})")
+            if samples_differ:
+                reason_for_full_get.append("Content samples differ")
+            if cache_info_missing:
+                reason_for_full_get.append("Missing cache info or cache disabled")
+            if head_failed_reason:
+                reason_for_full_get.append(f"HEAD request failed: {head_failed_reason}")
+
+            logger.debug(f"Performing full GET for {url} ({'; '.join(reason_for_full_get)}).")
+            try:
+                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
+                if self.stop_event.is_set():
+                    return None, None, None, None, None
+                time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
+
+                if response.status_code == 304:
+                    logger.debug(f"Resource {url} not modified (304) during full GET fallback.")
+                    return None, etag, last_modified, cached_content_length, cached_sample_hashes
+
+                response.raise_for_status()
+
+                new_etag = response.headers.get('ETag', etag)
+                new_last_modified = response.headers.get('Last-Modified', last_modified)
+
+                fetched_content_length = len(response.content)
+                fetched_sample_hashes_list = []
+                if fetched_content_length > 0:
+                    sample_ranges = []
+                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                        sample_ranges.append((middle_start, middle_end))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE:
+                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                        sample_ranges.append((last_start, fetched_content_length - 1))
+
+                    sample_ranges = sorted(list(set(sample_ranges)))
+
+                    for start, end in sample_ranges:
+                        sample_content: bytes = response.content[start : end + 1]
+                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
+
+                logger.debug(f"Fetched full content for {url} (Status: {response.status_code}). Content-Length: {fetched_content_length}")
+                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Full GET request failed for {url}: {e}")
+                return None, None, None, None, None
+        else:
+            logger.debug(f"Content for {url} is semantically identical to cached version. Using cached data.")
+            return None, new_etag, new_last_modified, current_content_length, cached_sample_hashes
+
+    def _get_channel_list_cache_filepath(self) -> str:
+        """
+        Constructs the file path for the channel list JSON cache.
+
+        :returns: The full path to the JSON file.
+        :rtype: str
+        """
+        return os.path.join(self.processed_data_cache_base_dir, CHANNEL_LIST_CACHE_FILE)
+
+    def _load_channel_list_cache(self) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]:
+        """
+        Loads cached channel list data along with ETag, Last-Modified, Content-Length, and Sample Hashes.
+        Checks if the data is fresh based on its internal timestamp and TTL.
+
+        :returns: A tuple containing cached data, ETag, Last-Modified header, content length, sample hashes, and freshness status.
+        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]
+        """
+        if self.stop_event.is_set():
+            logger.debug("Stop event set. Aborting cache load for channel list.")
+            return None, None, None, None, None, False
+
+        filepath: str = self._get_channel_list_cache_filepath()
+        if not os.path.exists(filepath):
+            logger.debug(f"Channel list cache file not found at {filepath}.")
+            return None, None, None, None, None, False
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                cache_content: Dict[str, Any] = json.load(f)
+
+            data: Optional[List[Dict[str, Any]]] = cache_content.get('data')
+            etag: Optional[str] = cache_content.get('etag')
+            last_modified: Optional[str] = cache_content.get('last_modified')
+            cached_at_str: Optional[str] = cache_content.get('cached_at')
+            content_length: Optional[int] = cache_content.get('content_length')
+            sample_hashes_list: Optional[List[int]] = cache_content.get('sample_hashes')
+            sample_hashes_tuple: Optional[Tuple[int, ...]] = tuple(sample_hashes_list) if sample_hashes_list is not None else None
+
+
+            is_fresh: bool = False
+            if cached_at_str:
+                cached_at: datetime = datetime.fromisoformat(cached_at_str)
+                current_time: datetime = datetime.now(timezone.utc) if cached_at.tzinfo else datetime.now()
+                if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
+                    is_fresh = True
+
+            if is_fresh:
+                logger.debug("Loaded channel list from JSON cache (fresh).")
+            else:
+                logger.debug("Channel list JSON cache is stale. Will attempt conditional fetch.")
+
+            return data, etag, last_modified, content_length, sample_hashes_tuple, is_fresh
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Error decoding channel list JSON cache: {e}. Deleting corrupted file and re-scraping: {filepath}")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return None, None, None, None, None, False
+        except IOError as e:
+            logger.warning(f"IOError loading channel list JSON cache: {e}. Deleting file and re-scraping: {filepath}")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return None, None, None, None, None, False
+        except Exception as e:
+            logger.error(f"Unexpected error in _load_channel_list_cache: {e}")
+            return None, None, None, None, None, False
+
+    def _save_channel_list_cache(self, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, sample_hashes: Optional[Tuple[int, ...]] = None) -> None:
+        """
+        Saves channel list data to the JSON cache, including HTTP ETag, Last-Modified, Content-Length, and Sample Hashes headers.
+
+        :param data: The channel list data to save.
+        :type data: List[Dict[str, Any]]
+        :param etag: The ETag header value.
+        :type etag: Optional[str]
+        :param last_modified: The Last-Modified header value.
+        :type last_modified: Optional[str]
+        :param content_length: The Content-Length of the fetched content.
+        :type content_length: Optional[int]
+        :param sample_hashes: Tuple of CRC32 hashes of content samples.
+        :type sample_hashes: Optional[Tuple[int, ...]]
+        """
+        if self.stop_event.is_set():
+            logger.debug("Stop event set. Aborting cache save for channel list.")
+            return
+
+        filepath: str = self._get_channel_list_cache_filepath()
+        try:
+            cache_content: Dict[str, Any] = {
+                'data': data,
+                'etag': etag,
+                'last_modified': last_modified,
+                'cached_at': datetime.now(timezone.utc).isoformat(),
+                'content_length': content_length,
+                'sample_hashes': list(sample_hashes) if sample_hashes is not None else None
+            }
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(cache_content, f, ensure_ascii=False, indent=4)
+            logger.debug(f"Saved channel list to JSON cache: {filepath}")
+        except IOError as e:
+            logger.error(f"Error saving channel list JSON cache: {e}.")
+
+    def _get_channel_list(self) -> List[Dict[str, str]]:
+        """
+        Parses the list of channels from the main sender page (m.tvspielfilm.de/sender/)
         using lxml.html and cssselect.
 
-        :param html_content: The HTML content of the sender list page.
-        :type html_content: str
-        :return: A list of dictionaries, each containing 'name', 'url', and 'source_id' for a channel.
-        :rtype: list[dict]
+        :returns: A list of dictionaries, each containing 'name', 'url', and 'source_id' for a channel.
+        :rtype: List[Dict[str, str]]
         """
-        root = lxml.html.fromstring(html_content)
-        
-        sender_links = self.selector_sender_links(root)
-        logger.debug(f"Found {len(sender_links)} potential sender links.")
+        if self.stop_event.is_set():
+            logger.debug("Stop event set. Aborting channel list fetch.")
+            return []
 
-        channel_data = []
-        for link in sender_links:
-            href = link.get('href')
-            name = _sanitize_xml_string(link.text_content().strip())
-            
-            source_id = None
-            source_id_match = self.re_source_id_html.search(href)
-            if source_id_match:
-                source_id = source_id_match.group(1).upper()
-            
-            if not source_id:
-                tracking_data_str = link.get('data-tracking-point')
-                if tracking_data_str:
-                    try:
-                        tracking_data = json.loads(tracking_data_str)
-                        if 'channel' in tracking_data:
-                            source_id = tracking_data['channel'].upper()
-                    except json.JSONDecodeError:
-                        logger.debug(f"Could not parse data-tracking-point for {name}: {tracking_data_str}")
+        channels_url: str = f"{BASE_URL}/sender/"
 
-            if source_id:
-                logger.debug(f"Processing channel: {name} (ID: {source_id}, Href: {href})")
-                if self.target_sourceids and source_id not in self.target_sourceids:
-                    logger.debug(f"Skipping {name} ({source_id}) as it's not in target_sourceids.")
-                    continue
+        cached_channel_list, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, is_cache_fresh = (
+            self._load_channel_list_cache()
+        )
 
-                channel_data.append({
-                    'name': name,
-                    'url': href,
-                    'source_id': source_id
-                })
-            else:
-                logger.warning(f"Could not extract source_id for channel: {name} (Href: {href}). Skipping.")
-        
-        logger.debug(f"Final channel_data list contains {len(channel_data)} channels after filtering.")
-        return channel_data
+        if self.enable_cache and is_cache_fresh and cached_channel_list is not None:
+            logger.debug("Using fresh channel list from JSON cache.")
+            return cached_channel_list
 
-    def parse_channel_schedule(self, html_content, channel_name, channel_url, channel_source_id, current_date):
-        """Parses the schedule for a single channel and a specific date using lxml.html and cssselect.
+        logger.info(f"Channel list JSON cache is stale or disabled. Attempting conditional fetch from {channels_url}...")
 
-        :param html_content: The HTML content of the channel's schedule page.
-        :type html_content: str
-        :param channel_name: The name of the channel.
-        :type channel_name: str
-        :param channel_url: The URL of the channel.
-        :type channel_url: str
-        :param channel_source_id: The source ID of the channel.
-        :type channel_source_id: str
+        response_content, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes = self.fetch_url(
+            channels_url,
+            etag=cached_etag,
+            last_modified=cached_last_modified,
+            cached_content_length=cached_content_length,
+            cached_sample_hashes=cached_sample_hashes
+        )
+
+        if response_content is not None:
+            logger.info("HTML content for channel list was modified or fetched for the first time. Parsing new data.")
+            root: lxml.html.HtmlElement = lxml.html.fromstring(response_content)
+            sender_links: List[lxml.html.HtmlElement] = self.selector_sender_links(root)
+            logger.debug(f"Found {len(sender_links)} potential sender links.")
+
+            channel_data: List[Dict[str, str]] = []
+            for link in sender_links:
+                if self.stop_event.is_set():
+                    logger.debug("Stop event set. Aborting channel list parsing.")
+                    return []
+                href: Optional[str] = link.get('href')
+                name: Optional[str] = _sanitize_xml_string(link.text_content().strip())
+
+                source_id: Optional[str] = None
+                if href:
+                    source_id_match: Optional[re.Match[str]] = self.re_source_id_html.search(href)
+                    if source_id_match:
+                        source_id = source_id_match.group(1).upper()
+
+                if not source_id:
+                    tracking_data_str: Optional[str] = link.get('data-tracking-point')
+                    if tracking_data_str:
+                        try:
+                            tracking_data: Dict[str, Any] = json.loads(tracking_data_str)
+                            if 'channel' in tracking_data:
+                                source_id = str(tracking_data['channel']).upper()
+                        except json.JSONDecodeError:
+                            logger.debug(f"Could not parse data-tracking-point for {name}: {tracking_data_str}")
+
+                if source_id and name:
+                    logger.debug(f"Processing channel: {name} (ID: {source_id}, Href: {href})")
+                    channel_data.append({
+                        'name': name,
+                        'url': f"{BASE_URL}{href}" if href and href.startswith('/') else (href if href else ''),
+                        'source_id': source_id
+                    })
+                else:
+                    logger.warning(f"Could not extract source_id or name for channel: {name} (Href: {href}). Skipping.")
+
+            if self.enable_cache:
+                self._save_channel_list_cache(channel_data, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
+
+            logger.info(f"Found {len(channel_data)} channels.")
+            return channel_data
+        elif cached_channel_list is not None:
+            logger.info("HTML content for channel list not modified (304) or semantically identical. Using stale JSON cache.")
+            if self.enable_cache:
+                self._save_channel_list_cache(cached_channel_list, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes)
+            return cached_channel_list
+        else:
+            logger.error("Failed to fetch channel list content and no cached data available.")
+            return []
+
+    def _get_schedule_for_channel_and_date(self, channel_info: Dict[str, str], current_date: datetime.date, html_content: str) -> List[Dict[str, Any]]:
+        """
+        Parses the schedule for a single channel and a specific date using lxml.html and cssselect.
+
+        :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
+        :type channel_info: Dict[str, str]
         :param current_date: The date for which the schedule is being parsed.
         :type current_date: datetime.date
-        :return: A list of dictionaries, each representing a program item.
-        :rtype: list[dict]
+        :param html_content: The HTML content of the schedule page.
+        :type html_content: str
+        :returns: A list of dictionaries, each representing a program item.
+        :rtype: List[Dict[str, Any]]
         """
-        root = lxml.html.fromstring(html_content)
-        
-        extracted_items = []
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting schedule parsing for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}.")
+            return []
+
+        channel_name: str = channel_info['name']
+        channel_source_id: str = channel_info['source_id']
+
+        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
+
+        extracted_items: List[Dict[str, Any]] = []
 
         for li_element in self.selector_li_elements(root):
-            item_data = {}
+            if self.stop_event.is_set():
+                logger.debug(f"Stop event set. Aborting item parsing for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
+                return []
+            item_data: Dict[str, Any] = {}
 
             item_data['type'] = 'program'
             item_data['channelname'] = channel_name
@@ -439,15 +822,15 @@ class TvsLeanScraper:
             item_data['starttime'] = li_element.get('data-start-time')
             item_data['endtime'] = li_element.get('data-end-time')
 
-            title_tag = self.selector_title_tag(li_element)
+            title_tag: List[lxml.html.HtmlElement] = self.selector_title_tag(li_element)
             if title_tag:
                 item_data['title'] = _sanitize_xml_string(title_tag[0].text_content().strip())
             else:
                 item_data['title'] = None
 
-            detail_link_tag = self.selector_detail_link_tag(li_element)
+            detail_link_tag: List[lxml.html.HtmlElement] = self.selector_detail_link_tag(li_element)
             if detail_link_tag:
-                detail_href = detail_link_tag[0].get('href')
+                detail_href: Optional[str] = detail_link_tag[0].get('href')
                 if detail_href:
                     if not detail_href.startswith('http'):
                         item_data['link'] = f"{BASE_URL}{detail_href}"
@@ -458,14 +841,14 @@ class TvsLeanScraper:
 
             item_data['eventid'] = li_element.get('data-id')
 
-            image_div = self.selector_image_div(li_element)
+            image_div: List[lxml.html.HtmlElement] = self.selector_image_div(li_element)
             if image_div:
-                style_attr = image_div[0].get('style')
+                style_attr: Optional[str] = image_div[0].get('style')
                 if style_attr:
-                    image_url_match = self.re_image_url_match.search(style_attr)
+                    image_url_match: Optional[re.Match[str]] = self.re_image_url_match.search(style_attr)
                     if image_url_match:
-                        original_full_image_url = image_url_match.group(1)
-                        base_image_url_match = self.re_image_base_path_match.match(original_full_image_url)
+                        original_full_image_url: str = image_url_match.group(1)
+                        base_image_url_match: Optional[re.Match[str]] = self.re_image_base_path_match.match(original_full_image_url)
                         if base_image_url_match:
                             item_data['image_base_path'] = base_image_url_match.group(1)
                         else:
@@ -483,16 +866,13 @@ class TvsLeanScraper:
                 item_data['image_url'] = None
 
             if self.check_img and item_data['image_url']:
-                orig_img = item_data['image_url']
-                item_id_for_log = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
-                logger.debug(f"CHECK_IMG ENABLED for item {item_id_for_log}. Scheduling check for: {item_data['image_url']}")
-                item_data['image_url'] = self.check_image_url(item_data['image_url'], orig_img, item_id_for_log)
-            else:
-                item_id_for_log = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
-                logger.debug(f"CHECK_IMG DISABLED or no image URL for item {item_id_for_log}. Yielding item directly.")
-            
+                orig_img: str = item_data['image_url']
+                item_id_for_log: str = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
+                logger.debug(f"Item {item_id_for_log}: Image URL check scheduled for: {item_data['image_url']}")
+                item_data['image_url'] = self._check_image_url_head(item_data['image_url'], orig_img, item_id_for_log)
+
             if item_data['link']:
-                detail_page_data = self.parse_detail_page(item_data['link'])
+                detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
                 item_data.update(detail_page_data)
             else:
                 logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
@@ -501,75 +881,100 @@ class TvsLeanScraper:
                     'original_title': None, 'country': None, 'year': None, 'duration': None,
                     'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
                     'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-                    'imdbrating': None
+                    'imdbrating': None, 'keyword': None
                 })
+
+            item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
+            item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'))
+            item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'))
 
             extracted_items.append(item_data)
         return extracted_items
 
-    def parse_detail_page(self, detail_url):
-        """Parses the detail page of a program to extract additional information
+    @functools.lru_cache(maxsize=128)
+    def parse_detail_page(self, detail_url: str) -> Dict[str, Any]:
+        """
+        Parses the detail page of a program to extract additional information
         using lxml.html and cssselect.
 
         :param detail_url: The URL of the program's detail page.
         :type detail_url: str
-        :return: A dictionary containing detailed program information.
-        :rtype: dict
+        :returns: A dictionary containing detailed program information.
+        :rtype: Dict[str, Any]
         """
-        detail_data = {
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting detail page parsing for {detail_url}.")
+            return {
+                'shortdescription': None, 'longdescription': None, 'genre': None,
+                'original_title': None, 'country': None, 'year': None, 'duration': None,
+                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+                'imdbrating': None, 'keyword': None
+            }
+
+        detail_data: Dict[str, Any] = {
             'shortdescription': None, 'longdescription': None, 'genre': None,
             'original_title': None, 'country': None, 'year': None, 'duration': None,
             'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
             'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-            'imdbrating': None
+            'imdbrating': None, 'keyword': None
         }
-        response = self.fetch_url(detail_url)
+        response_content, _, _, _, _ = self.fetch_url(detail_url)
 
-        if not response:
-            logger.warning(f"Failed to fetch detail page: {detail_url}. Skipping detail data extraction.")
+        if not response_content:
+            logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
             return detail_data
 
-        root = lxml.html.fromstring(response.content)
+        root: lxml.html.HtmlElement = lxml.html.fromstring(response_content)
 
-        description_section = self.selector_description_section(root)
+        adsc_sparte_match: Optional[re.Match[str]] = self.re_adsc_sparte_match.search(response_content)
+        if adsc_sparte_match:
+            detail_data['keyword'] = _sanitize_xml_string(adsc_sparte_match.group(1).strip())
+            logger.debug(f"Extracted keyword: {detail_data['keyword']}")
+
+        description_section: List[lxml.html.HtmlElement] = self.selector_description_section(root)
         if description_section:
-            short_desc_tag = self.selector_short_desc_tag(description_section[0])
+            short_desc_tag: List[lxml.html.HtmlElement] = self.selector_short_desc_tag(description_section[0])
             if short_desc_tag:
                 detail_data['shortdescription'] = _sanitize_xml_string(short_desc_tag[0].text_content().strip())
 
-            long_desc_paragraphs = self.selector_long_desc_paragraphs(description_section[0])
+            long_desc_paragraphs: List[lxml.html.HtmlElement] = self.selector_long_desc_paragraphs(description_section[0])
             if long_desc_paragraphs:
                 detail_data['longdescription'] = _sanitize_xml_string("\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()]))
 
-        genre_underline_tag = self.selector_genre_underline_tag(root)
+        genre_underline_tag: List[lxml.html.HtmlElement] = self.selector_genre_underline_tag(root)
         if genre_underline_tag:
-            genre_text = genre_underline_tag[0].text_content().strip()
-            genre_match = self.re_genre_pipe_match.search(genre_text)
+            genre_text: str = genre_underline_tag[0].text_content().strip()
+            genre_match: Optional[re.Match[str]] = self.re_genre_pipe_match.search(genre_text)
             if genre_match:
                 detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
             else:
                 detail_data['genre'] = _sanitize_xml_string(genre_text.strip())
-        
+
         if not detail_data['genre']:
-            all_infos_containers = self.selector_infos_container(root)
+            all_infos_containers: List[lxml.html.HtmlElement] = self.selector_infos_container(root)
             for infos_container_elem in all_infos_containers:
-                headline_p_elements = self.selector_headline_infos(infos_container_elem)
+                if self.stop_event.is_set():
+                    return detail_data
+                headline_p_elements: List[lxml.html.HtmlElement] = self.selector_headline_infos(infos_container_elem)
                 if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
                     for dt_element in self.selector_infos_dt(infos_container_elem):
+                        if self.stop_event.is_set():
+                            return detail_data
                         if dt_element.text_content().strip() == "Genre":
-                            genre_dd = dt_element.getnext()
+                            genre_dd: Optional[lxml.html.HtmlElement] = dt_element.getnext()
                             if genre_dd:
                                 detail_data['genre'] = _sanitize_xml_string(genre_dd.text_content().strip())
                                 break
                 if detail_data['genre']:
                     break
-        
+
         if not detail_data['genre']:
-            genre_tag_general = self.selector_genre_tag_general(root)
+            genre_tag_general: List[lxml.html.HtmlElement] = self.selector_genre_tag_general(root)
             if genre_tag_general:
                 detail_data['genre'] = _sanitize_xml_string(genre_tag_general[0].text_content().strip())
             else:
-                genre_time_tag_schedule = self.selector_genre_time_tag_schedule(root)
+                genre_time_tag_schedule: List[lxml.html.HtmlElement] = self.selector_genre_time_tag_schedule(root)
                 if genre_time_tag_schedule:
                     genre_match = self.re_genre_pipe_match.search(genre_time_tag_schedule[0].text_content().strip())
                     if genre_match:
@@ -579,15 +984,19 @@ class TvsLeanScraper:
 
         all_infos_containers = self.selector_infos_container(root)
         for infos_container_elem in all_infos_containers:
+            if self.stop_event.is_set():
+                return detail_data
             headline_p_elements = self.selector_headline_infos(infos_container_elem)
             if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
-                infos_dl = self.selector_infos_dl(infos_container_elem)
+                infos_dl: List[lxml.html.HtmlElement] = self.selector_infos_dl(infos_container_elem)
                 if infos_dl:
-                    dt_elements = self.selector_infos_dt(infos_dl[0])
-                    dd_elements = self.selector_infos_dd(infos_dl[0])
+                    dt_elements: List[lxml.html.HtmlElement] = self.selector_infos_dt(infos_dl[0])
+                    dd_elements: List[lxml.html.HtmlElement] = self.selector_infos_dd(infos_dl[0])
                     for dt, dd in zip(dt_elements, dd_elements):
-                        dt_text = dt.text_content().strip()
-                        dd_text = dd.text_content().strip()
+                        if self.stop_event.is_set():
+                            return detail_data
+                        dt_text: str = dt.text_content().strip()
+                        dd_text: str = dd.text_content().strip()
                         if dt_text == 'Originaltitel':
                             detail_data['original_title'] = _sanitize_xml_string(dd_text)
                         elif dt_text == 'Land':
@@ -598,11 +1007,11 @@ class TvsLeanScraper:
                             except ValueError:
                                 pass
                         elif dt_text == 'Länge':
-                            duration_minutes_match = self.re_duration_minutes_match.search(dd_text)
+                            duration_minutes_match: Optional[re.Match[str]] = self.re_duration_minutes_match.search(dd_text)
                             if duration_minutes_match:
                                 detail_data['duration'] = int(duration_minutes_match.group(1)) * 60
                         elif dt_text == 'FSK':
-                            fsk_match = self.re_fsk_match.search(dd_text)
+                            fsk_match: Optional[re.Match[str]] = self.re_fsk_match.search(dd_text)
                             if fsk_match:
                                 try:
                                     detail_data['parentalrating'] = int(fsk_match.group(1))
@@ -610,84 +1019,95 @@ class TvsLeanScraper:
                                     pass
                 break
 
-        all_cast_containers = self.selector_cast_container(root)
+        all_cast_containers: List[lxml.html.HtmlElement] = self.selector_cast_container(root)
         for cast_container_elem in all_cast_containers:
+            if self.stop_event.is_set():
+                return detail_data
             headline_p_elements = self.selector_headline_cast(cast_container_elem)
             if headline_p_elements and headline_p_elements[0].text_content().strip() == "Cast":
-                cast_list = []
-                cast_dl = self.selector_cast_dl(cast_container_elem)
+                cast_list: List[str] = []
+                cast_dl: List[lxml.html.HtmlElement] = self.selector_cast_dl(cast_container_elem)
                 if cast_dl:
                     for dt_tag in self.selector_cast_dt(cast_dl[0]):
-                        role = dt_tag.text_content().strip()
-                        actor_dd_tag = dt_tag.getnext()
+                        if self.stop_event.is_set():
+                            return detail_data
+                        role: str = dt_tag.text_content().strip()
+                        actor_dd_tag: Optional[lxml.html.HtmlElement] = dt_tag.getnext()
                         if actor_dd_tag is not None:
-                            actor_name = actor_dd_tag.text_content().strip()
+                            actor_name: str = actor_dd_tag.text_content().strip()
                             if actor_name:
-                                cast_list.append(_sanitize_xml_string(f"{actor_name} ({role})" if role else actor_name))
+                                cast_list.append(_sanitize_xml_string(f"{actor_name} ({role})" if role else actor_name) or "")
                 detail_data['cast'] = ", ".join(cast_list) if cast_list else None
                 break
 
-        all_crew_containers = self.selector_crew_container(root)
+        all_crew_containers: List[lxml.html.HtmlElement] = self.selector_crew_container(root)
         for crew_container_elem in all_crew_containers:
+            if self.stop_event.is_set():
+                return detail_data
             headline_p_elements = self.selector_headline_crew(crew_container_elem)
             if headline_p_elements and headline_p_elements[0].text_content().strip() == "Crew":
-                crew_dl = self.selector_crew_dl(crew_container_elem)
+                crew_dl: List[lxml.html.HtmlElement] = self.selector_crew_dl(crew_container_elem)
                 if crew_dl:
                     dt_elements = self.selector_crew_dt(crew_dl[0])
                     dd_elements = self.selector_crew_dd(crew_dl[0])
                     for dt, dd in zip(dt_elements, dd_elements):
-                        dt_text = dt.text_content().strip()
-                        dd_text = dd.text_content().strip()
+                        if self.stop_event.is_set():
+                            return detail_data
+                        dt_text: str = dt.text_content().strip()
+                        dd_text: str = dd.text_content().strip()
                         if dt_text == 'Regie':
                             detail_data['director'] = _sanitize_xml_string(dd_text)
                         elif dt_text == 'Drehbuch':
-                            sanitized_dd_text = _sanitize_xml_string(dd_text)
+                            sanitized_dd_text: Optional[str] = _sanitize_xml_string(dd_text)
                             detail_data['screenplay'] = f"{detail_data['screenplay']}, {sanitized_dd_text}" if detail_data['screenplay'] else sanitized_dd_text
                         elif dt_text == 'Kamera':
                             detail_data['camera'] = _sanitize_xml_string(dd_text)
                 break
 
-        content_rating_section = self.selector_content_rating_section(root)
+        content_rating_section: List[lxml.html.HtmlElement] = self.selector_content_rating_section(root)
         if content_rating_section:
-            num_rating_div = self.selector_num_rating_div(content_rating_section[0])
+            if self.stop_event.is_set():
+                return detail_data
+            num_rating_div: List[lxml.html.HtmlElement] = self.selector_num_rating_div(content_rating_section[0])
             if num_rating_div:
-                class_attr = num_rating_div[0].get('class', '').split()
-                rating_class_match = self.re_rating_class_match.search(' '.join(class_attr))
+                class_attr: List[str] = num_rating_div[0].get('class', '').split()
+                rating_class_match: Optional[re.Match[str]] = self.re_rating_class_match.search(' '.join(class_attr))
                 if rating_class_match:
                     try:
                         detail_data['numrating'] = int(rating_class_match.group(1))
                     except ValueError:
                         logger.warning(f"Could not convert numrating class '{rating_class_match.group(1)}' to integer.")
-            
-            txt_rating_tag = self.selector_txt_rating_tag(content_rating_section[0])
+
+            txt_rating_tag: List[lxml.html.HtmlElement] = self.selector_txt_rating_tag(content_rating_section[0])
             if txt_rating_tag:
                 detail_data['txtrating'] = _sanitize_xml_string(txt_rating_tag[0].text_content().strip())
 
-            rating_list_items = self.selector_rating_list_items(content_rating_section[0])
+            rating_list_items: List[lxml.html.HtmlElement] = self.selector_rating_list_items(content_rating_section[0])
             if rating_list_items:
-                ratings_parts = []
+                ratings_parts: List[str] = []
                 for item in rating_list_items:
-                    label = self.selector_rating_label(item)
-                    rating_span = self.selector_rating_span(item)
+                    if self.stop_event.is_set():
+                        return detail_data
+                    label: List[lxml.html.HtmlElement] = self.selector_rating_label(item)
+                    rating_span: List[lxml.html.HtmlElement] = self.selector_rating_span(item)
                     if label and rating_span:
                         rating_class_match = self.re_rating_class_match.search(' '.join(rating_span[0].get('class', '').split()))
                         if rating_class_match:
-                            num_dots = int(rating_class_match.group(1))
-                            stars = '*' * num_dots
+                            num_dots: int = int(rating_class_match.group(1))
+                            stars: str = '*' * num_dots
                             ratings_parts.append(f"{label[0].text_content().strip()} {stars}")
                 if ratings_parts:
                     detail_data['rating'] = _sanitize_xml_string(" / ".join(ratings_parts))
 
-            imdb_rating_tag = self.selector_imdb_rating_tag(content_rating_section[0])
+            imdb_rating_tag: List[lxml.html.HtmlElement] = self.selector_imdb_rating_tag(content_rating_section[0])
             if imdb_rating_tag:
                 detail_data['imdbrating'] = _sanitize_xml_string(imdb_rating_tag[0].text_content().strip())
 
         return detail_data
 
-    def check_image_url(self, url, original_image_url, item_key):
-        """Checks the status of an image URL by performing a HEAD request using the main session.
-
-        The `filter_fn` on the main session ensures that image responses are not cached.
+    def _check_image_url_head(self, url: str, original_image_url: str, item_key: str) -> str:
+        """
+        Checks the status of an image URL by performing a HEAD request using the main session.
 
         :param url: The URL of the image to check.
         :type url: str
@@ -695,91 +1115,271 @@ class TvsLeanScraper:
         :type original_image_url: str
         :param item_key: A unique identifier for the program item for logging purposes.
         :type item_key: str
-        :return: The validated image URL or the original URL if validation fails.
+        :returns: The validated image URL or the original URL if validation fails.
         :rtype: str
         """
-        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting image check for {url}.")
+            return original_image_url
+
+        headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
+
+        for _ in range(2):
+            try:
+                response: requests.Response = self.session.head(url, headers=headers, allow_redirects=True, timeout=10)
+                if self.stop_event.is_set():
+                    return original_image_url
+                response.raise_for_status()
+
+                if response.status_code == 200:
+                    final_image_url: str = response.url
+                    logger.debug(f"Item {item_key} - Image URL check successful ({response.status_code}). Using URL: {final_image_url}")
+                else:
+                    logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
+                    final_image_url = original_image_url
+                return final_image_url
+
+            except requests.exceptions.HTTPError as e:
+                logger.warning(f"Item {item_key} - Image URL check failed (HTTP Error {e.response.status_code}) for {url}: {e}. Falling back to original URL: {original_image_url}")
+                return original_image_url
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"Item {item_key} - Image URL check timed out for {url}: {e}. Falling back to original URL: {original_image_url}")
+                return original_image_url
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Item {item_key} - Image URL connection error for {url}: {e}. Falling back to original URL: {original_image_url}")
+                return original_image_url
+            except requests.exceptions.RequestException as e:
+                logger.error(f"An unexpected RequestException occurred for {url}: {e}")
+                return original_image_url
+
+        logger.error(f"Failed to fetch {url} after retrying.")
+        return original_image_url
+
+    def _get_daily_cache_filepath(self, channel_id: str, date: datetime.date) -> str:
+        """
+        Constructs the file path for the daily JSON data cache.
+
+        :param channel_id: The ID of the channel.
+        :type channel_id: str
+        :param date: The date of the schedule.
+        :type date: datetime.date
+        :returns: The full path to the JSON file.
+        :rtype: str
+        """
+        channel_dir: str = os.path.join(self.processed_data_cache_base_dir, channel_id.lower())
+        os.makedirs(channel_dir, exist_ok=True)
+        return os.path.join(channel_dir, f"{date.strftime('%Y%m%d')}.json")
+
+    def _load_daily_json_cache(self, channel_id: str, date: datetime.date) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]:
+        """
+        Loads processed JSON data from the daily data cache, along with ETag, Last-Modified, Content-Length, and Sample Hashes.
+        Checks if the data is fresh based on its internal timestamp and TTL.
+        Also deletes cache files for past days (if --keep-past-cache is not set) and for dates
+        beyond MAX_DAYS_TO_SCRAPE from the current date.
+
+        :param channel_id: The ID of the channel.
+        :type channel_id: str
+        :param date: The date of the schedule.
+        :type date: datetime.date
+        :returns: A tuple (data, etag, last_modified, content_length, sample_hashes, is_fresh).
+                  data is None if file not found or corrupted.
+                  is_fresh is True if the data is within TTL.
+        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]
+        """
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting cache load for {channel_id} on {date.strftime('%Y-%m-%d')}.")
+            return None, None, None, None, None, False
+
+        filepath: str = self._get_daily_cache_filepath(channel_id, date)
+        if not os.path.exists(filepath):
+            logger.debug(f"Daily JSON cache file not found for {channel_id} on {date.strftime('%Y-%m-%d')} at {filepath}.")
+            return None, None, None, None, None, False
+
+        if not self.keep_past_cache and date < (datetime.now().date() - timedelta(days=1)):
+            logger.debug(f"Deleting stale cache file for past day {date.strftime('%Y-%m-%d')} for channel {channel_id} as --keep-past-cache is not set.")
+            try:
+                os.remove(filepath)
+            except OSError as e:
+                logger.error(f"Error deleting cache file {filepath}: {e}")
+            return None, None, None, None, None, False
+
+        max_relevant_date = datetime.now().date() + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
+        if date > max_relevant_date:
+            logger.debug(f"Deleting outdated cache file for {date.strftime('%Y-%m-%d')} for channel {channel_id} (beyond max relevant date).")
+            try:
+                os.remove(filepath)
+            except OSError as e:
+                logger.error(f"Error deleting cache file {filepath}: {e}")
+            return None, None, None, None, None, False
 
         try:
-            response = self.session.head(url, headers=headers, allow_redirects=True, timeout=10)
-            response.raise_for_status()
+            with open(filepath, 'r', encoding='utf-8') as f:
+                cache_content: Dict[str, Any] = json.load(f)
 
-            if response.status_code == 200:
-                final_image_url = response.url
-                logger.debug(f"Item {item_key} - Image URL check successful ({response.status_code}). Using URL: {final_image_url}")
+            data: Optional[List[Dict[str, Any]]] = cache_content.get('data')
+            etag: Optional[str] = cache_content.get('etag')
+            last_modified: Optional[str] = cache_content.get('last_modified')
+            cached_at_str: Optional[str] = cache_content.get('cached_at')
+            content_length: Optional[int] = cache_content.get('content_length')
+            sample_hashes_list: Optional[List[int]] = cache_content.get('sample_hashes')
+            sample_hashes_tuple: Optional[Tuple[int, ...]] = tuple(sample_hashes_list) if sample_hashes_list is not None else None
+
+            is_fresh: bool = False
+            if cached_at_str:
+                cached_at: datetime = datetime.fromisoformat(cached_at_str)
+                current_time: datetime = datetime.now(timezone.utc)
+
+                if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
+                    is_fresh = True
+
+            if is_fresh:
+                logger.debug(f"Loaded schedule for {channel_id} on {date.strftime('%Y-%m-%d')} from daily JSON cache (fresh).")
             else:
-                logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
-                final_image_url = original_image_url
+                logger.debug(f"Daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')} is stale. Will attempt conditional fetch.")
 
-        except requests.exceptions.HTTPError as e:
-            logger.warning(f"Item {item_key} - Image URL check failed (HTTP Error {e.response.status_code}) for {url}: {e}. Falling back to original URL: {original_image_url}")
-            final_image_url = original_image_url
-        except requests.exceptions.Timeout as e:
-            logger.warning(f"Item {item_key} - Image URL check timed out for {url}: {e}. Falling back to original URL: {original_image_url}")
-            final_image_url = original_image_url
-        except requests.exceptions.ConnectionError as e:
-            logger.warning(f"Item {item_key} - Image URL connection error for {url}: {e}. Falling back to original URL: {original_image_url}")
-            final_image_url = original_image_url
-        except (EOFError, sqlite3.InterfaceError) as e: # Catch specific cache corruption errors
-            logger.warning(f"Cache corruption detected for {url}: {e}. Clearing entry and retrying fetch.")
-            try:
-                self.session.cache.delete(url) # Delete the corrupted entry
-                logger.info(f"Cleared corrupted cache entry for: {url}")
-            except Exception as cache_del_exc:
-                logger.error(f"Failed to delete corrupted cache entry for {url}: {cache_del_exc}")
-            # Loop will retry the fetch. If it fails again, it will exit the loop.
-            time.sleep(0.1) # Small delay before immediate retry to avoid hammering
-        except requests.exceptions.RequestException as e:
-            logger.error(f"An unexpected RequestException occurred for {url}: {e}")
-            return None
-        
-        logger.error(f"Failed to fetch {url} after retrying due to cache corruption.")
-        return None # Return None if both attempts fail
+            return data, etag, last_modified, content_length, sample_hashes_tuple, is_fresh
 
-    def _process_channel_day_schedule(self, channel_info, current_date, channel_num, total_channels):
-        """Helper method to fetch and parse a day's schedule for a channel, with retry logic for
+        except json.JSONDecodeError as e:
+            logger.warning(f"Error decoding daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting corrupted file and re-scraping: {filepath}")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return None, None, None, None, None, False
+        except IOError as e:
+            logger.warning(f"IOError loading daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting file and re-scraping: {filepath}")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return None, None, None, None, None, False
+        except Exception as e:
+            logger.error(f"Unexpected error in _load_daily_json_cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
+            return None, None, None, None, None, False
+
+    def _save_daily_json_cache(self, channel_id: str, date: datetime.date, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, sample_hashes: Optional[Tuple[int, ...]] = None) -> None:
+        """
+        Saves processed JSON data to the daily data cache, including HTTP ETag, Last-Modified, Content-Length, and Sample Hashes headers.
+
+        :param channel_id: The ID of the channel.
+        :type channel_id: str
+        :param date: The date of the schedule.
+        :type date: datetime.date
+        :param data: The program data for the day to save.
+        :type data: List[Dict[str, Any]]
+        :param etag: The ETag header value.
+        :type etag: Optional[str]
+        :param last_modified: The Last-Modified header value.
+        :type last_modified: Optional[str]
+        :param content_length: The Content-Length of the fetched content.
+        :type content_length: Optional[int]
+        :param sample_hashes: Tuple of CRC32 hashes of content samples.
+        :type sample_hashes: Optional[Tuple[int, ...]]
+        """
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting cache save for {channel_id} on {date.strftime('%Y-%m-%d')}.")
+            return
+
+        filepath: str = self._get_daily_cache_filepath(channel_id, date)
+        try:
+            cache_content: Dict[str, Any] = {
+                'data': data,
+                'etag': etag,
+                'last_modified': last_modified,
+                'cached_at': datetime.now(timezone.utc).isoformat(),
+                'content_length': content_length,
+                'sample_hashes': list(sample_hashes) if sample_hashes is not None else None
+            }
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(cache_content, f, ensure_ascii=False, indent=4)
+            logger.debug(f"Saved schedule for {channel_id} on {date.strftime('%Y-%m-%d')} to daily JSON cache.")
+        except IOError as e:
+            logger.error(f"Error saving daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}.")
+
+    def _process_channel_day_schedule(self, channel_info: Dict[str, str], current_date: datetime.date) -> List[Dict[str, Any]]:
+        """
+        Helper method to fetch and parse a day's schedule for a channel, with retry logic for
         application-level exceptions during schedule parsing.
 
-        This method also logs the "Scraping the channel" message once per channel.
+        It prioritizes fresh data from the local JSON cache. If stale or missing,
+        it performs a conditional HTTP GET to check for updates.
 
         :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
-        :type channel_info: dict
-        :param current_date: The date for which to process the schedule.
+        :type channel_info: Dict[str, str]
+        :param current_date: The date for which the schedule is being parsed.
         :type current_date: datetime.date
-        :param channel_num: The current channel number (1-based index).
-        :type channel_num: int
-        :param total_channels: The total number of channels being processed.
-        :type total_channels: int
-        :return: A list of extracted program items for the given channel and date.
-        :rtype: list[dict]
+        :returns: A list of dictionaries, each representing a program item.
+        :rtype: List[Dict[str, Any]]
         """
-        channel_name = channel_info['name']
-        channel_url = channel_info['url']
-        channel_source_id = channel_info['source_id']
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting _process_channel_day_schedule for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}.")
+            return []
 
-        if channel_source_id not in self.logged_channel_start_messages:
-            logger.info(f"Scraping the channel: {channel_name} (ID: {channel_source_id}) for {self.days_to_scrape} day(s). [{channel_num}/{total_channels}]")
-            self.logged_channel_start_messages.add(channel_source_id)
+        channel_name: str = channel_info['name']
+        channel_url: str = channel_info['url']
+        channel_source_id: str = channel_info['source_id']
 
-        schedule_url = self._build_schedule_url(channel_url, current_date)
+        programs_for_day: List[Dict[str, Any]] = []
+
+        if self.enable_cache and not self.cache_clear_requested:
+            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, is_cache_fresh = (
+                self._load_daily_json_cache(channel_source_id, current_date)
+            )
+
+            if is_cache_fresh and cached_data is not None:
+                programs_for_day = cached_data
+                logger.debug(f"Using fresh data from JSON cache for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
+                return programs_for_day
+        else:
+            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, is_cache_fresh = (
+                None, None, None, None, None, False
+            )
+            if self.cache_clear_requested:
+                logger.debug(f"Cache clear requested. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
+            elif not self.enable_cache:
+                logger.debug(f"Cache disabled. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
+
+        schedule_url: str = self._build_schedule_url(channel_url, current_date)
 
         for attempt in range(self.max_schedule_retries + 1):
+            if self.stop_event.is_set():
+                logger.debug(f"Stop event set. Aborting schedule fetch attempts for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
+                return []
             try:
-                attempt_str = f" (Attempt {attempt + 1}/{self.max_schedule_retries + 1})" if attempt > 0 else ""
-                logger.info(f"Fetching schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
-                schedule_response = self.fetch_url(schedule_url)
+                attempt_str: str = f" (Attempt {attempt + 1}/{self.max_schedule_retries + 1})" if attempt > 0 else ""
 
-                if schedule_response:
-                    return self.parse_channel_schedule(
-                        schedule_response.content,
-                        channel_name,
-                        channel_url,
-                        channel_source_id,
-                        current_date
+                logger.debug(f"Attempting to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
+
+                response_content, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes = self.fetch_url(
+                    schedule_url,
+                    etag=cached_etag,
+                    last_modified=cached_last_modified,
+                    cached_content_length=cached_content_length,
+                    cached_sample_hashes=cached_sample_hashes
+                )
+
+                if response_content is not None:
+                    logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} was modified or fetched for the first time. Parsing new data.")
+                    newly_parsed_items: List[Dict[str, Any]] = self._get_schedule_for_channel_and_date(
+                        channel_info,
+                        current_date,
+                        response_content
                     )
+                    if self.stop_event.is_set():
+                        return []
+
+                    if self.enable_cache:
+                        self._save_daily_json_cache(channel_source_id, current_date, newly_parsed_items, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
+                    return newly_parsed_items
+
+                elif cached_data is not None:
+                    logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} not modified (304) or semantically identical. Using stale JSON cache.")
+                    if self.enable_cache:
+                        self._save_daily_json_cache(channel_source_id, current_date, cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes)
+                    return cached_data
                 else:
-                    logger.warning(f"Failed to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} after HTTP retries. Skipping application-level retries.")
+                    logger.warning(f"Could not retrieve or parse program for {channel_name} on {current_date.strftime('%Y-%m-%d')}. No cached data available.")
                     return []
+            except KeyboardInterrupt:
+                self.stop_event.set()
+                logger.info(f"KeyboardInterrupt caught in worker for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Signaling main thread to stop.")
+                raise
             except Exception as exc:
                 logger.exception(f"Schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')} generated an exception on attempt {attempt + 1}: {exc}")
                 if attempt < self.max_schedule_retries:
@@ -789,35 +1389,124 @@ class TvsLeanScraper:
                     return []
         return []
 
-    def run_scraper(self):
-        """Orchestrates the main scraping process.
+    def _proactive_cache_cleanup(self) -> None:
+        """
+        Proactively removes stale cache files for ALL channels and dates,
+        not just those being actively scraped in the current run.
+        This ensures that directories become truly empty if all their files are stale.
+        """
+        if self.stop_event.is_set():
+            logger.debug("Stop event set. Aborting proactive cache cleanup.")
+            return
+
+        logger.debug(f"Starting proactive cleanup of stale cache files in {self.processed_data_cache_base_dir}...")
+        current_time_utc = datetime.now(timezone.utc)
+        max_relevant_date = datetime.now().date() + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
+
+        for channel_dir_name in os.listdir(self.processed_data_cache_base_dir):
+            if self.stop_event.is_set():
+                logger.debug("Stop event set during proactive cache cleanup.")
+                return
+
+            channel_dir_path = os.path.join(self.processed_data_cache_base_dir, channel_dir_name)
+
+            if channel_dir_name == CHANNEL_LIST_CACHE_FILE:
+                continue
+
+            if os.path.isdir(channel_dir_path):
+                for filename in os.listdir(channel_dir_path):
+                    if self.stop_event.is_set():
+                        logger.debug("Stop event set during proactive cache cleanup.")
+                        return
+
+                    if filename.endswith('.json'):
+                        filepath = os.path.join(channel_dir_path, filename)
+                        try:
+                            date_str = filename.replace('.json', '')
+                            file_date = datetime.strptime(date_str, '%Y%m%d').date()
+
+                            with open(filepath, 'r', encoding='utf-8') as f:
+                                cache_content = json.load(f)
+
+                            cached_at_str = cache_content.get('cached_at')
+                            is_stale = False
+
+                            if cached_at_str:
+                                cached_at = datetime.fromisoformat(cached_at_str)
+                                if (current_time_utc - cached_at.replace(tzinfo=timezone.utc)).total_seconds() >= self.cache_ttl:
+                                    is_stale = True
+                            else:
+                                is_stale = True
+
+                            if not self.keep_past_cache and file_date < (datetime.now().date() - timedelta(days=1)):
+                                is_stale = True
+
+                            if file_date > max_relevant_date:
+                                is_stale = True
+
+                            if is_stale:
+                                logger.debug(f"Deleting stale cache file: {filepath}")
+                                os.remove(filepath)
+                        except (json.JSONDecodeError, ValueError, IOError) as e:
+                            logger.warning(f"Error processing cache file {filepath} during proactive cleanup: {e}. Deleting corrupted file.")
+                            if os.path.exists(filepath):
+                                os.remove(filepath)
+                        except Exception as e:
+                            logger.error(f"Unexpected error during proactive cache cleanup for {filepath}: {e}")
+        logger.debug("Finished proactive cleanup of stale cache files.")
+
+    def _cleanup_empty_cache_dirs(self) -> None:
+        """
+        Removes empty channel subdirectories within the processed data cache directory.
+        """
+        if self.stop_event.is_set():
+            logger.debug("Stop event set. Aborting empty cache directory cleanup.")
+            return
+
+        logger.debug(f"Starting cleanup of empty cache directories in {self.processed_data_cache_base_dir}...")
+        for root, dirs, files in os.walk(self.processed_data_cache_base_dir, topdown=False):
+            if self.stop_event.is_set():
+                logger.debug("Stop event set during empty directory cleanup.")
+                return
+            for dir_name in dirs:
+                dir_path = os.path.join(root, dir_name)
+                try:
+                    if not os.listdir(dir_path):
+                        os.rmdir(dir_path)
+                        logger.debug(f"Removed empty cache directory: {dir_path}")
+                except OSError as e:
+                    logger.warning(f"Could not remove directory {dir_path}: {e}")
+        logger.debug("Finished cleanup of empty cache directories.")
+
+    def run_scraper(self) -> List[Dict[str, Any]]:
+        """
+        Orchestrates the main scraping process.
 
         Fetches the list of channels, then concurrently scrapes the schedule
         for each channel for the specified number of days.
 
-        :return: A list of all extracted program items.
-        :rtype: list[dict]
+        :returns: A list of all extracted program items.
+        :rtype: List[Dict[str, Any]]
         """
         logger.info("Starting scrape process...")
-        initial_response = self.fetch_url(f"{BASE_URL}/sender/")
 
-        if not initial_response:
-            logger.error("Failed to fetch initial sender list page. Exiting.")
+        if not self.is_specific_date_set:
+            logger.info(f"Scraping {self.days_to_scrape} day(s).")
+
+        if self.enable_cache and not self.cache_clear_requested:
+            self._proactive_cache_cleanup()
+
+        available_channels_full_list: List[Dict[str, str]] = self._get_channel_list()
+        if self.stop_event.is_set():
             return []
+        available_channel_ids: set[str] = {channel['source_id'] for channel in available_channels_full_list}
 
-        # Get all available channels from the website
-        available_channels_full_list = self.parse_sender_list(initial_response.content)
-        available_channel_ids = {channel['source_id'] for channel in available_channels_full_list}
-
-        # Filter channel_list based on target_sourceids, if provided
         if self.target_sourceids:
-            # Check for requested IDs that were not found on the website
-            missing_ids = self.target_sourceids - available_channel_ids
+            missing_ids: set[str] = self.target_sourceids - available_channel_ids
             for missing_id in missing_ids:
                 logger.warning(f"Requested channel ID '{missing_id}' not found on TVSpielfilm.de. This channel will be skipped.")
 
-            # Filter the channel_list to only include requested and found channels
-            channel_list_to_scrape = [
+            channel_list_to_scrape: List[Dict[str, str]] = [
                 channel for channel in available_channels_full_list
                 if channel['source_id'] in self.target_sourceids
             ]
@@ -825,143 +1514,171 @@ class TvsLeanScraper:
                 logger.warning("No requested channels found on the website. Exiting.")
                 return []
         else:
-            # If no specific channels targeted, scrape all available
             channel_list_to_scrape = available_channels_full_list
 
         if not channel_list_to_scrape:
             logger.warning("No channels found or specified. Exiting.")
             return []
 
-        total_channels = len(channel_list_to_scrape)
-        tasks = []
-        for i, channel in enumerate(channel_list_to_scrape):
-            channel_num = i + 1
-            logger.info(f"Processing channel: {channel['name']} (ID: {channel['source_id']}).")
-            for j in range(self.days_to_scrape):
-                current_date = self.start_date + timedelta(days=j)
-                tasks.append((channel, current_date, channel_num, total_channels))
+        total_channels: int = len(channel_list_to_scrape)
 
-        all_extracted_items = []
+        for channel in channel_list_to_scrape:
+            logger.info(f"Scheduling tasks for channel: {channel['name']} (ID: {channel['source_id']}).")
+
+        all_extracted_items: List[Dict[str, Any]] = []
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_task = {executor.submit(self._process_channel_day_schedule, channel, date, channel_num, total_channels): (channel, date, channel_num, total_channels)
-                                for channel, date, channel_num, total_channels in tasks}
+            for i, channel in enumerate(channel_list_to_scrape):
+                if self.stop_event.is_set():
+                    logger.info("Stop event detected. Aborting further channel processing.")
+                    break
 
-            for future in concurrent.futures.as_completed(future_to_task):
-                channel_info, current_date, channel_num, total_channels = future_to_task[future]
+                channel_num: int = i + 1
+                logger.info(f"Scraping channel: {channel['name']} (ID: {channel['source_id']}) [{channel_num}/{total_channels}]")
+
+                channel_tasks: List[Tuple[Dict[str, str], datetime.date]] = []
+                for j in range(self.days_to_scrape):
+                    current_date: datetime.date = self.start_date + timedelta(days=j)
+                    channel_tasks.append((channel, current_date))
+
+                future_to_day_task: Dict[concurrent.futures.Future, Tuple[Dict[str, str], datetime.date]] = {
+                    executor.submit(self._process_channel_day_schedule, ch, date): (ch, date)
+                    for ch, date in channel_tasks
+                }
+
                 try:
-                    items_for_day = future.result()
-                    all_extracted_items.extend(items_for_day)
-                    logger.info(f"Finished processing items for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}. Extracted {len(items_for_day)} items.")
-                except Exception as exc:
-                    logger.exception(f"An unhandled exception occurred for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}: {exc}")
+                    for future in concurrent.futures.as_completed(future_to_day_task):
+                        if self.stop_event.is_set():
+                            logger.info(f"Stop event detected for channel {channel['name']}. Canceling remaining tasks for this channel.")
+                            break
+
+                        ch_info, current_date_for_task = future_to_day_task[future]
+                        try:
+                            items_for_day: List[Dict[str, Any]] = future.result()
+                            all_extracted_items.extend(items_for_day)
+                            logger.info(f"Finished processing items for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')}. Extracted {len(items_for_day)} items.")
+                        except concurrent.futures.CancelledError:
+                            logger.info(f"Task for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')} was cancelled.")
+                        except Exception as exc:
+                            logger.exception(f"An unhandled exception occurred for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')}: {exc}")
+                except KeyboardInterrupt:
+                    logger.info("KeyboardInterrupt detected during channel processing. Setting stop event and attempting graceful shutdown...")
+                    self.stop_event.set()
+                    raise
 
         logger.info(f"Scraping completed. Total items extracted: {len(all_extracted_items)}")
-        
-        if self.enable_cache and self.clean_stale_cache_enabled:
-            logger.debug("Removing expired cache entries and vacuuming SQLite database...")
-            try:
-                self.session.cache.delete(expired=True)
-                
-                cache_db_path = os.path.join(self.cache_dir, 'tvs_cache.sqlite')
-                if os.path.exists(cache_db_path):
-                    conn = sqlite3.connect(cache_db_path)
-                    conn.execute('VACUUM;')
-                    conn.close()
-                    logger.debug("SQLite database vacuumed successfully.")
-                else:
-                    logger.warning(f"SQLite cache database not found at {cache_db_path}. Skipping vacuum.")
-            except Exception as e:
-                logger.error(f"Error during cache cleanup or vacuuming: {e}")
-            logger.debug("Cache cleanup and vacuuming process completed.")
+
+        self._cleanup_empty_cache_dirs()
 
         return all_extracted_items
 
-# --- Helper functions for XMLTV generation ---
-def _convert_unix_to_xmltv_time(unix_timestamp_str):
-    """Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
+
+def _convert_unix_to_xmltv_time(unix_timestamp_str: Optional[str]) -> Optional[str]:
+    """
+    Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
 
     :param unix_timestamp_str: Unix timestamp as a string.
-    :type unix_timestamp_str: str
-    :return: XMLTV formatted time string, or None if conversion fails.
-    :rtype: str or None
+    :type unix_timestamp_str: Optional[str]
+    :returns: XMLTV formatted time string, or None if conversion fails.
+    :rtype: Optional[str]
     """
     if not unix_timestamp_str:
-        logger.warning("Empty or None Unix timestamp string received.")
         return None
     try:
-        unix_timestamp = int(unix_timestamp_str)
-        
+        unix_timestamp: int = int(unix_timestamp_str)
+
         if unix_timestamp < 946684800:
             logger.warning(f"Unrealistically old Unix timestamp '{unix_timestamp_str}' for XMLTV conversion received. Skipping.")
             return None
 
-        dt_object = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
-        
+        dt_object: datetime = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+
         return dt_object.strftime('%Y%m%d%H%M%S +0000')
     except (ValueError, TypeError) as e:
         logger.warning(f"Could not convert Unix timestamp '{unix_timestamp_str}' to XMLTV time: {e}")
         return None
 
-def generate_xmltv(data_list, output_file):
-    """Generates an XMLTV-compliant XML file from the scraped data
-    using xml.sax.saxutils.XMLGenerator for streaming output,
-    buffered in memory for efficient file writing.
+
+def _process_rating_string(original_rating_string: Optional[str]) -> Optional[str]:
+    """
+    Cleans and formats the rating string.
+
+    :param original_rating_string: The raw rating string.
+    :type original_rating_string: Optional[str]
+    :returns: The cleaned and formatted rating string, or None if input was None.
+    :rtype: Optional[str]
+    """
+    if not original_rating_string:
+        return None
+    parts: List[str] = [p.strip() for p in original_rating_string.split('/')]
+    filtered_parts: List[str] = [part for part in parts if '*' in part]
+    return " / ".join(filtered_parts) if filtered_parts else None
+
+
+def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str) -> None:
+    """
+    Generates an XMLTV-compliant XML file from the scraped data
+    using xml.sax.saxutils.XMLGenerator for streaming output.
 
     Applies XML character sanitation to all string content.
 
     :param data_list: A list of dictionaries, each representing a program item.
-    :type data_list: list[dict]
+                      Expected to have 'starttime_xmltv', 'endtime_xmltv', and 'rating_cleaned' fields.
+    :type data_list: List[Dict[str, Any]]
     :param output_file: The path to the output XMLTV file.
     :type output_file: str
     """
-    logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator with in-memory buffering.")
+    logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator.")
 
-    channels = {}
+    channels: Dict[str, Dict[str, str]] = {}
     for item in data_list:
-        sourceid = item.get('sourceid')
-        channelname = item.get('channelname')
-        if sourceid and sourceid not in channels:
-            channels[sourceid] = {'name': channelname} 
+        sourceid: Optional[str] = item.get('sourceid')
+        channelname: Optional[str] = item.get('channelname')
+        if sourceid and sourceid not in channels and channelname:
+            channels[sourceid] = {'name': channelname}
 
     if not data_list:
         logger.warning("No program data to generate XMLTV. Output file will not be created.")
         return
 
-    with io.BytesIO() as buffer:
-        handler = XMLGenerator(buffer, encoding='utf-8')
+    output_stream: Any = open(output_file, 'wb')
+    logger.info(f"Writing XMLTV output to file: {output_file}")
 
-        buffer.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
-        buffer.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
+    try:
+        handler = XMLGenerator(output_stream, encoding='utf-8')
+
+        output_stream.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        output_stream.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
 
         handler.startElement('tv', {
             'date': datetime.now().strftime('%Y%m%d%H%M%S %z').replace(' ', ''),
-            'source-info-name': _sanitize_xml_string('TVSpielfilm.de'),
-            'source-info-url': _sanitize_xml_string('https://m.tvspielfilm.de/'),
-            'generator-info-name': _sanitize_xml_string('TVSpielfilm-Scraper/1.0')
+            'source-info-name': _sanitize_xml_string('TVSpielfilm.de') or '',
+            'source-info-url': _sanitize_xml_string('https://m.tvspielfilm.de/') or '',
+            'generator-info-name': _sanitize_xml_string('TVSpielfilm-Scraper/1.0') or ''
         })
-        buffer.write(b'\n')
+        output_stream.write(b'\n')
 
         for sourceid, channel_info in sorted(channels.items()):
-            robust_channel_id = f"{sourceid.lower()}.tvs" 
+            robust_channel_id: str = f"{sourceid.lower()}.tvs"
             handler.startElement('channel', {'id': robust_channel_id})
-            buffer.write(b'\n  ')
+            output_stream.write(b'\n  ')
             handler.startElement('display-name', {})
             handler.characters(channel_info['name'])
             handler.endElement('display-name')
-            buffer.write(b'\n')
+            output_stream.write(b'\n')
             handler.endElement('channel')
-            buffer.write(b'\n')
+            output_stream.write(b'\n')
 
         for item in data_list:
-            start_time_xmltv = _convert_unix_to_xmltv_time(item.get('starttime'))
-            stop_time_xmltv = _convert_unix_to_xmltv_time(item.get('endtime'))
+            start_time_xmltv: Optional[str] = item.get('starttime_xmltv')
+            stop_time_xmltv: Optional[str] = item.get('endtime_xmltv')
 
             if not start_time_xmltv or not item.get('sourceid') or not item.get('title'):
-                logger.warning(f"Skipping program due to missing essential data (buffered): {item.get('title', 'N/A')} on {item.get('channelname', 'N/A')}")
+                logger.warning(f"Skipping program due to missing essential data: {item.get('title', 'N/A')} on {item.get('channelname', 'N/A')}")
                 continue
 
             robust_channel_id = f"{item['sourceid'].lower()}.tvs"
-            programme_attrib = {
+            programme_attrib: Dict[str, str] = {
                 'start': start_time_xmltv,
                 'channel': robust_channel_id
             }
@@ -969,14 +1686,14 @@ def generate_xmltv(data_list, output_file):
                 programme_attrib['stop'] = stop_time_xmltv
 
             handler.startElement('programme', programme_attrib)
-            buffer.write(b'  ')
+            output_stream.write(b'  ')
 
             handler.startElement('title', {})
             handler.characters(item['title'])
             handler.endElement('title')
-            buffer.write(b'\n    ')
+            output_stream.write(b'\n    ')
 
-            full_description = []
+            full_description: List[str] = []
             if item.get('shortdescription'):
                 full_description.append(item['shortdescription'])
             if item.get('longdescription'):
@@ -985,24 +1702,24 @@ def generate_xmltv(data_list, output_file):
                 handler.startElement('desc', {})
                 handler.characters('\n'.join(full_description))
                 handler.endElement('desc')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('director') or item.get('cast') or item.get('screenplay'):
                 handler.startElement('credits', {})
-                buffer.write(b'\n      ')
+                output_stream.write(b'\n      ')
                 if item.get('director'):
                     handler.startElement('director', {})
                     handler.characters(item['director'])
                     handler.endElement('director')
-                    buffer.write(b'\n      ')
-                
+                    output_stream.write(b'\n      ')
+
                 if item.get('cast'):
-                    cast_entries = [c.strip() for c in item['cast'].split(',')]
+                    cast_entries: List[str] = [c.strip() for c in item['cast'].split(',') if c.strip()]
                     for entry in cast_entries:
-                        match = re_cast_entry_match.match(entry)
+                        match: Optional[re.Match[str]] = re_cast_entry_match.match(entry)
                         if match:
-                            actor_name = match.group(1).strip()
-                            actor_role = match.group(2).strip()
+                            actor_name: str = match.group(1).strip()
+                            actor_role: str = match.group(2).strip()
                             handler.startElement('actor', {'role': actor_role})
                             handler.characters(actor_name)
                             handler.endElement('actor')
@@ -1010,272 +1727,337 @@ def generate_xmltv(data_list, output_file):
                             handler.startElement('actor', {})
                             handler.characters(entry)
                             handler.endElement('actor')
-                        buffer.write(b'\n      ')
+                        output_stream.write(b'\n      ')
 
                 if item.get('screenplay'):
-                    writers = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
+                    writers: List[str] = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
                     for writer in writers:
                         handler.startElement('writer', {})
                         handler.characters(writer)
                         handler.endElement('writer')
-                        buffer.write(b'\n      ')
-                
+                        output_stream.write(b'\n      ')
+
                 handler.endElement('credits')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('year'):
                 handler.startElement('date', {})
                 handler.characters(str(item['year']))
                 handler.endElement('date')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('genre'):
-                categories = [c.strip() for c in item['genre'].split(',') if c.strip()]
+                categories: List[str] = [c.strip() for c in item['genre'].split(',') if c.strip()]
                 for category in categories:
                     handler.startElement('category', {})
                     handler.characters(category)
                     handler.endElement('category')
-                    buffer.write(b'\n    ')
+                    output_stream.write(b'\n    ')
+
+            if item.get('keyword'):
+                handler.startElement('keyword', {})
+                handler.characters(item['keyword'])
+                handler.endElement('keyword')
+                output_stream.write(b'\n    ')
 
             if item.get('duration') is not None:
-                length_minutes = round(item['duration'] / 60)
+                length_minutes: int = round(item['duration'] / 60)
                 handler.startElement('length', {'units': 'minutes'})
                 handler.characters(str(length_minutes))
                 handler.endElement('length')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('link'):
                 handler.startElement('url', {})
-                handler.characters(item['link']) 
+                handler.characters(item['link'])
                 handler.endElement('url')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('country'):
                 handler.startElement('country', {})
-                handler.characters(item['country']) 
+                handler.characters(item['country'])
                 handler.endElement('country')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('parentalrating') is not None:
                 handler.startElement('rating', {'system': 'FSK'})
-                buffer.write(b'\n      ')
+                output_stream.write(b'\n      ')
                 handler.startElement('value', {})
                 handler.characters(str(item['parentalrating']))
                 handler.endElement('value')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
                 handler.endElement('rating')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('numrating') is not None:
                 handler.startElement('star-rating', {'system': 'TVSpielfilm'})
-                buffer.write(b'\n      ')
+                output_stream.write(b'\n      ')
                 handler.startElement('value', {})
-                handler.characters(f"{item['numrating']} / 3") 
+                handler.characters(f"{item['numrating']} / 3")
                 handler.endElement('value')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
                 handler.endElement('star-rating')
-                buffer.write(b'\n    ')
-            
+                output_stream.write(b'\n    ')
+
             if item.get('imdbrating'):
                 handler.startElement('star-rating', {'system': 'IMDB'})
-                buffer.write(b'\n      ')
+                output_stream.write(b'\n      ')
                 handler.startElement('value', {})
-                handler.characters(item['imdbrating']) 
+                handler.characters(f"{item['imdbrating']} / 10")
                 handler.endElement('value')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
                 handler.endElement('star-rating')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             if item.get('txtrating'):
                 handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Editorial'})
                 handler.characters(item['txtrating'])
                 handler.endElement('review')
-                buffer.write(b'\n    ')
-            
-            if item.get('rating'):
-                original_rating_string = item['rating']
-                parts = [p.strip() for p in original_rating_string.split('/')]
-                
-                filtered_parts = []
-                for part in parts:
-                    if '*' in part:
-                        filtered_parts.append(part)
-                
-                cleaned_rating_string = " / ".join(filtered_parts)
+                output_stream.write(b'\n    ')
 
-                if cleaned_rating_string:
-                    handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Detailed Rating'})
-                    handler.characters(cleaned_rating_string)
-                    handler.endElement('review')
-                    buffer.write(b'\n    ')
+            if item.get('rating_cleaned'):
+                handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Detailed Rating'})
+                handler.characters(item['rating_cleaned'])
+                handler.endElement('review')
+                output_stream.write(b'\n    ')
 
             if item.get('image_base_path'):
-                image_url_300 = f"{item['image_base_path']}_300.jpg"
-                image_url_600 = f"{item['image_base_path']}_600.jpg"
-                
+                image_url_300: str = f"{item['image_base_path']}_300.jpg"
+                image_url_600: str = f"{item['image_base_path']}_600.jpg"
+
                 handler.startElement('image', {'type': 'still', 'size': '2', 'orient': 'L', 'system': 'tvsp'})
                 handler.characters(image_url_300)
                 handler.endElement('image')
-                buffer.write(b'\n    ')
-                
+                output_stream.write(b'\n    ')
+
                 handler.startElement('image', {'type': 'still', 'size': '3', 'orient': 'L', 'system': 'tvsp'})
                 handler.characters(image_url_600)
                 handler.endElement('image')
-                buffer.write(b'\n    ')
+                output_stream.write(b'\n    ')
 
             handler.endElement('programme')
-            buffer.write(b'\n')
+            output_stream.write(b'\n')
 
         handler.endElement('tv')
-        buffer.write(b'\n')
+        output_stream.write(b'\n')
+    finally:
+        output_stream.close()
 
-        with open(output_file, 'wb') as f_out:
-            f_out.write(buffer.getvalue())
-
-    logger.info(f"XMLTV file '{output_file}' generated successfully.")
+    logger.info(f"XMLTV file '{output_file}' successfully generated.")
 
 
-# --- Scraper Execution via Command-Line Arguments ---
 if __name__ == '__main__':
+    import sys
+    import logging.handlers
+    from argparse import RawTextHelpFormatter
+
+    DEFAULT_OUTPUT_FILE: str = 'tvspielfilm'
+
     parser = argparse.ArgumentParser(
-        description="Lean Web Scraper for TVSpielfilm.de using Requests + lxml.html and cssselect."
+        description="""
+A lean web scraper for TVSpielfilm.de to extract TV program data.
+This script uses requests and lxml.html for HTML parsing,
+supports caching with manual conditional fetching, parallel fetching,
+and handles rate limiting with exponential backoff.
+""",
+        formatter_class=RawTextHelpFormatter,
+        epilog="""
+Examples:
+  Scrape today's program for all channels and save as XMLTV:
+    python3 tvs-scraper.py
+
+  Scrape program for ARD and ZDF for the next 3 days as JSON:
+    python3 tvs-scraper.py --channel-ids ARD,ZDF --days 3 --output-format json
+
+  List all available channels:
+    python3 tvs-scraper.py --list-channels
+
+  Scrape program for a specific date with debug logging:
+    python3 tvs-scraper.py --date 20250523 --log-verbose
+
+  Clear the entire cache before scraping:
+    python3 tvs-scraper.py --cache-clear
+"""
     )
-    # Channel Selection
-    parser.add_argument(
+
+    channel_group = parser.add_argument_group('Channel Selection')
+    channel_group.add_argument(
         '--list-channels',
         action='store_true',
-        help='List all available channel IDs and their names, then exit.'
+        help='Lists all available channel IDs and their names, then exits.'
     )
-    parser.add_argument(
+    channel_group.add_argument(
         '--channel-ids',
         type=str,
-        help='Comma-separated list of channel IDs (e.g., "ARD,ZDF"). If not provided, all channels are scraped.'
+        help='Comma-separated list of channel IDs (e.g., "ARD,ZDF").\n'
+             'If not specified, all channels will be scraped.'
     )
-    parser.add_argument(
+    channel_group.add_argument(
         '--channel-ids-file',
         type=str,
-        help='Path to a file containing a comma-separated list of channel IDs. If provided, this option takes precedence over --channel-ids.'
+        help='Path to a file containing a comma-separated list of channel IDs.\n'
+             'If specified, this option takes precedence over --channel-ids.'
     )
-    # Date/Time Range
-    parser.add_argument(
+
+    date_group = parser.add_argument_group('Date and Time Range')
+    date_group.add_argument(
         '--date',
         type=str,
-        help='Specific date for scraping in %%Y%%m%%d format (e.g., 20250523). If provided, only this date is scraped, and --days is ignored. If not provided, current date is used as start date, and --days controls the number of days scraped.'
+        help='Specific date to scrape inYYYYMMDD format (e.g., 20250523).\n'
+             'If specified, only this date will be scraped and --days will be ignored.\n'
+             'If not specified, the current date will be used as the start date and\n'
+             '--days will control the number of days scraped.'
     )
-    parser.add_argument(
+    date_group.add_argument(
         '--days',
         type=int,
         default=DEFAULT_DAYS,
-        help=f'Number of days to scrape (1-{MAX_DAYS_TO_SCRAPE}). Default: {DEFAULT_DAYS} (means today only). This argument is ignored if --date is provided.'
+        help=f'Number of days to scrape (1-{MAX_DAYS_TO_SCRAPE}).\n'
+             f'Default: {DEFAULT_DAYS} (means today only). Ignored if --date is specified.'
     )
-    # Output Configuration
-    parser.add_argument(
+
+    output_group = parser.add_argument_group('Output Configuration')
+    output_group.add_argument(
         '--output-file',
         type=str,
-        default='tvspielfilm',
-        help='Path to the output file. The file extension will be automatically added based on --output-format (e.g., .json, .xml). If a custom extension is provided, it will be used. Default: tvspielfilm.'
+        default=DEFAULT_OUTPUT_FILE,
+        help='Path to the output file.\n'
+             'If the default filename is used, the file extension will be\n'
+             'automatically appended based on --output-format (e.g., .json for "json",\n'
+             ' .xml for "xmltv"). If a custom filename is provided,\n'
+             'it will be used exactly as specified.\n'
+             f'Default: "{DEFAULT_OUTPUT_FILE}".'
     )
-    parser.add_argument(
+    output_group.add_argument(
         '--output-format',
         type=str,
         default=DEFAULT_OUTPUT_FORMAT,
         choices=['xmltv', 'json'],
-        help=f'Output format: "xmltv", "json" (JSON array). Default: {DEFAULT_OUTPUT_FORMAT}.'
+        help=f'Output format: "xmltv", "json" (JSON array).\n'
+             f'Default: {DEFAULT_OUTPUT_FORMAT}.'
     )
-    parser.add_argument(
+    output_group.add_argument(
         '--img-size',
         type=str,
         choices=['300', '600'],
         default=DEFAULT_IMG_SIZE,
-        help=f'Image size to extract ("300" or "600"). Default: {DEFAULT_IMG_SIZE}.'
+        help=f'Image size to extract ("300" or "600").\n'
+             f'Default: {DEFAULT_IMG_SIZE}.'
     )
-    parser.add_argument(
-        '--check-img',
+    output_group.add_argument(
+        '--img-check',
         action='store_true',
-        help='If set, performs an additional HEAD request to check if image URLs are valid. Increases scrape time.'
+        dest='check_img',
+        help='If set, an additional HEAD request will be performed to check the validity\n'
+             'of image URLs. Increases scraping time.'
     )
-    # Logging
-    parser.add_argument(
+
+    logging_group = parser.add_argument_group('Logging')
+    logging_group.add_argument(
         '--log-level',
         type=str,
         default='WARNING',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        help='Set the logging level. Default: WARNING.'
+        help='Sets the logging level. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL.\n'
+             'Default: WARNING.'
     )
-    parser.add_argument(
-        '--verbose',
+    logging_group.add_argument(
+        '--log-verbose',
         action='store_true',
-        help='Enable debug logging output (overrides --log-level to DEBUG).'
+        dest='verbose',
+        help='Enables debug logging output (overrides --log-level to DEBUG).'
     )
-    parser.add_argument(
-        '--use-syslog',
+    logging_group.add_argument(
+        '--log-syslog',
         action='store_true',
-        help='Send log output to syslog (Linux logger utility).'
+        dest='use_syslog',
+        help='Sends log output to Syslog (Linux Logger Utility).'
     )
-    parser.add_argument(
-        '--syslog-tag',
+    logging_group.add_argument(
+        '--log-syslog-tag',
         type=str,
         default=DEFAULT_SYSLOG_TAG,
-        help=f'Identifier (tag) to use for syslog messages. Default: "{DEFAULT_SYSLOG_TAG}".'
+        dest='syslog_tag',
+        help=f'Identifier (tag) for Syslog messages.\n'
+             f'Default: "{DEFAULT_SYSLOG_TAG}".'
     )
-    # Caching
-    parser.add_argument(
-        '--disable-cache',
+
+    caching_group = parser.add_argument_group('Caching')
+    caching_group.add_argument(
+        '--cache-dir',
+        type=str,
+        help=f'Specifies a custom directory for cache files.\n'
+             f'Default is a subdirectory "{DEFAULT_CACHE_SUBDIR}" in the system temporary directory.'
+    )
+    caching_group.add_argument(
+        '--cache-clear',
         action='store_true',
-        help=(
-            'Disable caching of HTTP responses to disk. '
-            'By default, caching is enabled to reduce network requests on repeated runs. '
-            'Uses the requests-cache library.'
-        )
+        dest='clear_cache',
+        help='Clears the entire cache directory (including processed data cache)\n'
+             'before scraping begins.'
     )
-    parser.add_argument(
+    caching_group.add_argument(
+        '--cache-disable',
+        action='store_true',
+        default=DEFAULT_DISABLE_CACHE,
+        dest='disable_cache',
+        help='Disables caching of processed JSON data to disk.\n'
+             'Default: False (cache is enabled).'
+    )
+    caching_group.add_argument(
         '--cache-ttl',
         type=int,
         default=DEFAULT_CACHE_TTL_SECONDS,
-        help=f'Cache Time To Live in seconds. This defines how long a cached response '
-             f'is considered "fresh" and will be served directly without contacting the server. '
-             f'After this time, requests-cache will attempt to revalidate the content with the server. '
+        help=f'Cache Time To Live in seconds. This defines how long a processed\n'
+             f'JSON file is considered "fresh" and used directly without re-scraping HTML.\n'
              f'Default: {DEFAULT_CACHE_TTL_SECONDS // 3600} hours.'
     )
-    parser.add_argument(
-        '--cache-dir',
-        type=str,
-        help=f'Specify a custom directory for the requests-cache files. Default is a subdirectory "{DEFAULT_CACHE_SUBDIR}" in the system\'s temporary directory.'
-    )
-    parser.add_argument(
-        '--clear-cache',
+    caching_group.add_argument(
+        '--cache-simple',
         action='store_true',
-        help='Clears the entire requests-cache directory before starting the scrape. This will delete all cached responses.'
+        dest='use_etag_cache_check',
+        help='If set, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency.\n'
+             'By default, the Content-Length and Range-Request CRC32 comparison method is used.'
     )
-    parser.add_argument(
-        '--keep-stale-cache',
+    caching_group.add_argument(
+        '--cache-keep',
         action='store_true',
-        help='If set, expired cache files will NOT be automatically removed at the start of the run. requests-cache handles expiration, but this prevents immediate deletion of stale entries.'
+        dest='keep_past_cache',
+        help='If set, cache files for past days will NOT be automatically deleted.\n'
+             'By default, past days\' cache files are deleted.'
     )
-    # Performance
-    parser.add_argument(
+
+    performance_group = parser.add_argument_group('Performance')
+    performance_group.add_argument(
         '--max-workers',
         type=int,
         default=DEFAULT_MAX_WORKERS,
-        help=f'Maximum number of concurrent workers for fetching data. Default: {DEFAULT_MAX_WORKERS}.'
+        help=f'Maximum number of concurrent workers for data fetching.\n'
+             f'Default: {DEFAULT_MAX_WORKERS}.'
     )
-    parser.add_argument(
+    performance_group.add_argument(
         '--max-retries',
         type=int,
         default=DEFAULT_MAX_RETRIES,
-        help=f'Maximum number of retry attempts for failed HTTP requests (e.g., 429, 5xx, connection errors). Default: {DEFAULT_MAX_RETRIES}.'
+        help=f'Maximum number of retries for failed HTTP requests\n'
+             f'(e.g., 429, 5xx, connection errors).\n'
+             f'Default: {DEFAULT_MAX_RETRIES}.'
     )
-    parser.add_argument(
+    performance_group.add_argument(
         '--min-request-delay',
         type=float,
         default=DEFAULT_MIN_REQUEST_DELAY,
-        help=f'Minimum delay in seconds between HTTP requests. Applies only to live fetches (not cached). Default: {DEFAULT_MIN_REQUEST_DELAY}s.'
+        help=f'Minimum delay in seconds between HTTP requests.\n'
+             f'Applies only to live fetches.\n'
+             f'Default: {DEFAULT_MIN_REQUEST_DELAY}s.'
     )
-    parser.add_argument(
+    performance_group.add_argument(
         '--max-schedule-retries',
         type=int,
         default=DEFAULT_MAX_SCHEDULE_RETRIES,
-        help=f'Maximum number of retry attempts for application-level errors during schedule parsing/generation. Default: {DEFAULT_MAX_SCHEDULE_RETRIES}.'
+        help=f'Maximum number of retries for application-level errors\n'
+             f'during schedule parsing/generation.\n'
+             f'Default: {DEFAULT_MAX_SCHEDULE_RETRIES}.'
     )
 
     args = parser.parse_args()
@@ -1287,7 +2069,7 @@ if __name__ == '__main__':
         numeric_level = getattr(logging, args.log_level.upper(), None)
         if not isinstance(numeric_level, int):
             raise ValueError(f'Invalid log level: {args.log_level}')
-    
+
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
 
@@ -1306,26 +2088,26 @@ if __name__ == '__main__':
         except Exception as e:
             logger.error(f"Failed to set up syslog logging to '/dev/log'. This often means the syslog daemon "
                          f"is not running or '/dev/log' is not accessible: {e}. Falling back to console logging.")
-            console_handler = logging.StreamHandler()
+            console_handler = logging.StreamHandler(sys.stderr)
             console_handler.setFormatter(console_formatter)
             logging.root.addHandler(console_handler)
     else:
-        console_handler = logging.StreamHandler()
+        console_handler = logging.StreamHandler(sys.stderr)
         console_handler.setFormatter(console_formatter)
         logging.root.addHandler(console_handler)
 
     logging.root.setLevel(numeric_level)
     logger.setLevel(numeric_level)
 
-    base_cache_path = args.cache_dir if args.cache_dir else os.path.join(tempfile.gettempdir(), DEFAULT_CACHE_SUBDIR)
+    base_cache_path: str = args.cache_dir if args.cache_dir else os.path.join(tempfile.gettempdir(), DEFAULT_CACHE_SUBDIR)
 
     if args.clear_cache:
         if os.path.exists(base_cache_path):
-            logger.info(f"Clearing requests-cache directory: {base_cache_path}")
+            logger.info(f"Clearing cache directory: {base_cache_path}")
             shutil.rmtree(base_cache_path)
-            logger.info("requests-cache cleared.")
+            logger.info("Cache cleared.")
         else:
-            logger.info("No requests-cache directory found to clear.")
+            logger.info(f"No cache found at {base_cache_path} to clear.")
 
     scraper = TvsLeanScraper(
         channel_ids=args.channel_ids,
@@ -1333,70 +2115,62 @@ if __name__ == '__main__':
         img_size=args.img_size,
         check_img=args.check_img,
         start_date_str=args.date,
-        enable_cache=not args.disable_cache,
-        cache_ttl=args.cache_ttl,
         cache_dir_path=args.cache_dir,
         max_workers=args.max_workers,
-        clean_stale_cache=not args.keep_stale_cache,
         max_retries=args.max_retries,
         channel_ids_file=getattr(args, 'channel_ids_file', None),
         min_request_delay=args.min_request_delay,
-        max_schedule_retries=args.max_schedule_retries
+        max_schedule_retries=args.max_schedule_retries,
+        disable_cache=args.disable_cache,
+        cache_ttl=args.cache_ttl,
+        use_etag_cache_check=args.use_etag_cache_check,
+        keep_past_cache=args.keep_past_cache,
+        cache_clear=args.clear_cache
     )
 
     if args.list_channels:
         logger.info("Fetching available channels...")
-        initial_response = scraper.fetch_url(f"{BASE_URL}/sender/")
-        if initial_response:
-            channel_list = scraper.parse_sender_list(initial_response.content)
-            if channel_list:
-                print("\n--- Available Channels (ID: Name) ---")
-                for channel in sorted(channel_list, key=lambda x: x['name'].lower()):
-                    print(f"{channel['source_id']}: {channel['name']}")
-                print("-------------------------------------\n")
-            else:
-                logger.warning("No channels found.")
+        channel_list: List[Dict[str, str]] = scraper._get_channel_list()
+        if channel_list:
+            print("\n--- Available Channels (ID: Name) ---")
+            for channel in sorted(channel_list, key=lambda x: x['name'].lower()):
+                print(f"{channel['source_id']}: {channel['name']}")
+            print("-------------------------------------\n")
         else:
-            logger.error("Failed to fetch channel list. Cannot list channels.")
-        exit(0)
+            logger.warning("No channels found.")
+        sys.exit(0)
 
-    start_time = time.time()
-    extracted_data = scraper.run_scraper()
-    end_time = time.time()
+    start_time: float = time.time()
+    try:
+        extracted_data: List[Dict[str, Any]] = scraper.run_scraper()
+    except KeyboardInterrupt:
+        print("\nUser interruption (Ctrl-C)")
+        sys.exit(1)
+    end_time: float = time.time()
 
-    elapsed_time = end_time - start_time
+    elapsed_time: float = end_time - start_time
 
+    hours: float
+    minutes: float
+    seconds: float
     hours, remainder = divmod(elapsed_time, 3600)
     minutes, seconds = divmod(remainder, 60)
-    
-    if args.output_format == 'json':
-        output_filename = args.output_file
-        logger.info(f"Writing items to {output_filename} in JSON array format.")
-        
-        processed_data_for_json = []
-        for item in extracted_data:
-            if item.get('rating'):
-                original_rating_string = item['rating']
-                parts = [p.strip() for p in original_rating_string.split('/')]
-                
-                filtered_parts = []
-                for part in parts:
-                    if '*' in part:
-                        filtered_parts.append(part)
-                
-                cleaned_rating_string = " / ".join(filtered_parts)
-                
-                if cleaned_rating_string:
-                    item['rating'] = cleaned_rating_string
-                else:
-                    item['rating'] = None
-            processed_data_for_json.append(item)
 
+    default_output_file_arg: str = parser.get_default('output_file')
+    output_filename: str = args.output_file
+
+    if args.output_format == 'json':
+        if output_filename == default_output_file_arg and not output_filename.endswith('.json'):
+            output_filename = f"{output_filename}.json"
+
+        logger.info(f"Writing items to {output_filename} in JSON array format.")
         with open(output_filename, 'w', encoding='utf-8') as f:
-            json.dump(processed_data_for_json, f, ensure_ascii=False, indent=4)
-        logger.info(f"Data saved successfully. Total {len(extracted_data)} items written.")
+            json.dump(extracted_data, f, ensure_ascii=False, indent=4)
+        logger.info(f"Data successfully saved. Total {len(extracted_data)} items written.")
     elif args.output_format == 'xmltv':
-        output_filename = args.output_file
+        if output_filename == default_output_file_arg and not output_filename.endswith('.xml'):
+            output_filename = f"{output_filename}.xml"
+
         generate_xmltv(extracted_data, output_filename)
 
     else:

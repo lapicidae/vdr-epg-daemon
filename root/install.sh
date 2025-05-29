@@ -49,7 +49,7 @@ runtimePKG=(
     python3
     python3-cssselect
     python3-lxml
-    python3-requests-cache
+    python3-requests
     ssmtp
     tzdata
     unzip

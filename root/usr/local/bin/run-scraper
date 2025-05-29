@@ -170,7 +170,7 @@ if [ "$update_needed" = true ]; then
 	if [ -n "$joined_channel_ids" ]; then
 		log_message "Executing tvs-scraper for IDs: %s" "${joined_channel_ids}"
 		# Pass all remaining arguments from the bash script's command line to the python script.
-		/usr/local/bin/tvs-scraper --channel-ids "${joined_channel_ids}" --output-format xmltv --days "${days}" --output-file "${outFile}" --cache-dir "${cacheDir}" --max-workers 10 --use-syslog --syslog-tag scraper --log-level INFO "${PYTHON_SCRIPT_ARGS[@]}"
+		/usr/local/bin/tvs-scraper --channel-ids "${joined_channel_ids}" --output-format xmltv --days "${days}" --output-file "${outFile}" --cache-dir "${cacheDir}" --log-syslog --log-syslog-tag scraper --log-level INFO "${PYTHON_SCRIPT_ARGS[@]}"
 	else
 		log_message "No XMLTV channel IDs found in '%s'. tvs-scraper will not be executed." "$chMap"
 	fi
