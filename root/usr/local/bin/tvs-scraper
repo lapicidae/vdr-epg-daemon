@@ -357,6 +357,49 @@ class TvsLeanScraper:
             return f"{image_base_path}_{img_size}.jpg"
         return None
 
+    def _make_request(self, method: str, url: str, headers: Dict[str, str], allow_redirects: bool, timeout: int, log_prefix: str = "") -> Optional[requests.Response]:
+        """
+        Centralized function to make HTTP requests and handle RequestExceptions.
+
+        :param method: HTTP method ('get' or 'head').
+        :type method: str
+        :param url: The URL to fetch.
+        :type url: str
+        :param headers: Dictionary of HTTP headers.
+        :type headers: Dict[str, str]
+        :param allow_redirects: Whether to follow HTTP redirects.
+        :type allow_redirects: bool
+        :param timeout: Request timeout in seconds.
+        :type timeout: int
+        :param log_prefix: Optional prefix for log messages.
+        :type log_prefix: str
+        :returns: The requests.Response object on success, None on failure.
+        :rtype: Optional[requests.Response]
+        """
+        if self.stop_event.is_set():
+            logger.debug(f"{log_prefix}Stop event set. Aborting {method.upper()} for {url}.")
+            return None
+        try:
+            if method == 'get':
+                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=timeout)
+            elif method == 'head':
+                response: requests.Response = self.session.head(url, headers=headers, allow_redirects=allow_redirects, timeout=timeout)
+            else:
+                logger.error(f"{log_prefix}Unsupported HTTP method: {method}")
+                return None
+
+            if self.stop_event.is_set():
+                logger.debug(f"{log_prefix}Stop event set during {method.upper()} for {url}.")
+                return None
+
+            time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
+
+            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+            return response
+        except requests.exceptions.RequestException as e:
+            logger.error(f"{log_prefix}Request failed for {url} ({method.upper()}): {e}")
+            return None
+
     @functools.lru_cache(maxsize=128)
     def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, cached_sample_hashes: Optional[Tuple[int, ...]] = None, allow_redirects: bool = True, is_detail_page: bool = False) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]]]:
         """
@@ -394,83 +437,71 @@ class TvsLeanScraper:
 
         if self.cache_clear_requested:
             logger.debug(f"Performing full GET for {url} (explicit --cache-clear requested).")
-            try:
-                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
-                if self.stop_event.is_set():
-                    return None, None, None, None, None
-                time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
-                response.raise_for_status()
-
-                new_etag: Optional[str] = response.headers.get('ETag')
-                new_last_modified: Optional[str] = response.headers.get('Last-Modified')
-                fetched_content_length: int = len(response.content)
-                fetched_sample_hashes_list: List[int] = []
-                if fetched_content_length > 0:
-                    sample_ranges = []
-                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                        sample_ranges.append((middle_start, middle_end))
-                    if fetched_content_length > RANGE_SAMPLE_SIZE:
-                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                        sample_ranges.append((last_start, fetched_content_length - 1))
-                    sample_ranges = sorted(list(set(sample_ranges)))
-                    for start, end in sample_ranges:
-                        sample_content: bytes = response.content[start : end + 1]
-                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
-
-                logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}")
-                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Request failed for {url} (due to --cache-clear): {e}")
+            response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Cache Clear] ")
+            if response is None:
                 return None, None, None, None, None
+
+            new_etag: Optional[str] = response.headers.get('ETag')
+            new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+            fetched_content_length: int = len(response.content)
+            fetched_sample_hashes_list: List[int] = []
+            if fetched_content_length > 0:
+                sample_ranges = []
+                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+                if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                    middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                    sample_ranges.append((middle_start, middle_end))
+                if fetched_content_length > RANGE_SAMPLE_SIZE:
+                    last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                    sample_ranges.append((last_start, fetched_content_length - 1))
+                sample_ranges = sorted(list(set(sample_ranges)))
+                for start, end in sample_ranges:
+                    sample_content: bytes = response.content[start : end + 1]
+                    fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+            fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
+
+            logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}")
+            return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
 
         if self.use_etag_cache_check:
             logger.debug(f"Simple conditional GET (ETag/Last-Modified/304) enabled for {url}.")
-            try:
-                if etag:
-                    headers['If-None-Match'] = etag
-                if last_modified:
-                    headers['If-Modified-Since'] = last_modified
+            if etag:
+                headers['If-None-Match'] = etag
+            if last_modified:
+                headers['If-Modified-Since'] = last_modified
 
-                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
-                if self.stop_event.is_set():
-                    return None, None, None, None, None
-                time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
+            response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Conditional GET] ")
 
-                if response.status_code == 304:
-                    logger.debug(f"Resource {url} not modified (304). Using cached data.")
-                    return None, etag, last_modified, cached_content_length, cached_sample_hashes
+            if response is None:
+                return None, None, None, None, None # Request failed, return None
 
-                response.raise_for_status()
-                new_etag: Optional[str] = response.headers.get('ETag')
-                new_last_modified: Optional[str] = response.headers.get('Last-Modified')
-                fetched_content_length: int = len(response.content)
-                fetched_sample_hashes_list: List[int] = []
+            if response.status_code == 304:
+                logger.debug(f"Resource {url} not modified (304). Using cached data.")
+                return None, etag, last_modified, cached_content_length, cached_sample_hashes
 
-                if fetched_content_length > 0:
-                    sample_ranges = []
-                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                        sample_ranges.append((middle_start, middle_end))
-                    if fetched_content_length > RANGE_SAMPLE_SIZE:
-                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                        sample_ranges.append((last_start, fetched_content_length - 1))
-                    sample_ranges = sorted(list(set(sample_ranges)))
-                    for start, end in sample_ranges:
-                        sample_content: bytes = response.content[start : end + 1]
-                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
+            new_etag: Optional[str] = response.headers.get('ETag')
+            new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+            fetched_content_length: int = len(response.content)
+            fetched_sample_hashes_list: List[int] = []
 
-                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
+            if fetched_content_length > 0:
+                sample_ranges = []
+                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+                if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                    middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                    sample_ranges.append((middle_start, middle_end))
+                if fetched_content_length > RANGE_SAMPLE_SIZE:
+                    last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                    sample_ranges.append((last_start, fetched_content_length - 1))
+                sample_ranges = sorted(list(set(sample_ranges)))
+                for start, end in sample_ranges:
+                    sample_content: bytes = response.content[start : end + 1]
+                    fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+            fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
 
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Request failed for {url} (simple conditional GET mode): {e}")
-                return None, None, None, None, None
+            return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
 
         perform_content_length_check = (self.cache_content_validation_mode == "full" or self.cache_content_validation_mode == "content_length")
         perform_range_request_check = (self.cache_content_validation_mode == "full" or self.cache_content_validation_mode == "range_requests")
@@ -481,7 +512,31 @@ class TvsLeanScraper:
                 return None, etag, last_modified, cached_content_length, cached_sample_hashes
             else:
                 logger.debug(f"No cache info available for {url} even with 'none' validation mode. Forcing full GET.")
-                return self._fetch_fresh_content(url, save_cache=True, is_detail_page=is_detail_page)
+                response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[No Cache Info/None Validation] ")
+                if response is None:
+                    return None, None, None, None, None
+
+                new_etag = response.headers.get('ETag', etag)
+                new_last_modified = response.headers.get('Last-Modified', last_modified)
+                fetched_content_length = len(response.content)
+                fetched_sample_hashes_list = []
+                if fetched_content_length > 0:
+                    sample_ranges = []
+                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                        sample_ranges.append((middle_start, middle_end))
+                    if fetched_content_length > RANGE_SAMPLE_SIZE:
+                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                        sample_ranges.append((last_start, fetched_content_length - 1))
+                    sample_ranges = sorted(list(set(sample_ranges)))
+                    for start, end in sample_ranges:
+                        sample_content: bytes = response.content[start : end + 1]
+                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
+                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
+
 
         current_content_length: int = 0
         new_etag: Optional[str] = etag
@@ -490,18 +545,15 @@ class TvsLeanScraper:
         head_failed_reason: Optional[str] = None
 
         if perform_content_length_check and not is_detail_page:
-            try:
-                head_response: requests.Response = self.session.head(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
-                if self.stop_event.is_set():
-                    return None, None, None, None, None
-                head_response.raise_for_status()
+            head_response = self._make_request('head', url, headers, allow_redirects, 10, log_prefix="[HEAD Request] ")
+            if head_response:
                 current_content_length = int(head_response.headers.get('Content-Length', 0))
                 new_etag = head_response.headers.get('ETag', etag)
                 new_last_modified = head_response.headers.get('Last-Modified', last_modified)
                 logger.debug(f"HEAD request for {url}: Content-Length={current_content_length}, ETag={new_etag}, Last-Modified={new_last_modified}")
-            except requests.exceptions.RequestException as e:
-                head_failed_reason = f"HEAD request failed: {e}"
-                logger.debug(f"HEAD request failed for {url}: {e}. Will attempt full GET.")
+            else:
+                head_failed_reason = "HEAD request failed"
+                logger.debug(f"HEAD request failed for {url}. Will attempt full GET.")
                 current_content_length = 0
         elif is_detail_page and perform_content_length_check:
             current_content_length = 0
@@ -552,9 +604,8 @@ class TvsLeanScraper:
                 range_header: str = f"bytes={start}-{end}"
                 range_headers: Dict[str, str] = {**headers, 'Range': range_header}
 
-                try:
-                    range_response: requests.Response = self.session.get(url, headers=range_headers, timeout=10)
-                    range_response.raise_for_status()
+                range_response = self._make_request('get', url, range_headers, allow_redirects, 10, log_prefix=f"[Range Request {i}] ")
+                if range_response:
                     current_hash: int = zlib.crc32(range_response.content)
                     current_sample_hashes.append(current_hash)
 
@@ -562,9 +613,9 @@ class TvsLeanScraper:
                         samples_differ = True
                         logger.debug(f"Sample {i} for {url} differs. Forcing full GET.")
                         break
-                except requests.exceptions.RequestException as e:
+                else:
                     samples_differ = True
-                    logger.debug(f"Range request for {url} ({range_header}) failed: {e}. Forcing full GET.")
+                    logger.debug(f"Range request for {url} ({range_header}) failed. Forcing full GET.")
                     break
         elif perform_range_request_check and (cached_sample_hashes is None or not cached_sample_hashes):
             logger.debug(f"Range request check enabled for {url} but no samples available. Forcing full GET.")
@@ -582,48 +633,41 @@ class TvsLeanScraper:
 
         if reason_for_full_get or (is_detail_page and (perform_content_length_check or perform_range_request_check)):
             logger.debug(f"Performing full GET for {url} ({'; '.join(reason_for_full_get)}).")
-        try:
-            response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=10)
-            if self.stop_event.is_set():
-                return None, None, None, None, None
-            time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
 
-            if response.status_code == 304:
-                logger.debug(f"Resource {url} not modified (304) during full GET fallback.")
-                return None, etag, last_modified, cached_content_length, cached_sample_hashes
-
-            response.raise_for_status()
-
-            new_etag = response.headers.get('ETag', etag)
-            new_last_modified = response.headers.get('Last-Modified', last_modified)
-
-            fetched_content_length = len(response.content)
-            fetched_sample_hashes_list = []
-
-            if perform_range_request_check and fetched_content_length > 0:
-                sample_ranges = []
-                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-                if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                    middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                    sample_ranges.append((middle_start, middle_end))
-                if fetched_content_length > RANGE_SAMPLE_SIZE:
-                    last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                    sample_ranges.append((last_start, fetched_content_length - 1))
-
-                sample_ranges = sorted(list(set(sample_ranges)))
-
-                for start, end in sample_ranges:
-                    sample_content: bytes = response.content[start : end + 1]
-                    fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-            fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
-
-            logger.debug(f"Fetched full content for {url} (Status: {response.status_code}). Content-Length: {fetched_content_length}")
-            return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Full GET request failed for {url}: {e}")
+        response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Full GET Fallback] ")
+        if response is None:
             return None, None, None, None, None
+
+        if response.status_code == 304:
+            logger.debug(f"Resource {url} not modified (304) during full GET fallback.")
+            return None, etag, last_modified, cached_content_length, cached_sample_hashes
+
+        new_etag = response.headers.get('ETag', etag)
+        new_last_modified = response.headers.get('Last-Modified', last_modified)
+
+        fetched_content_length = len(response.content)
+        fetched_sample_hashes_list = []
+
+        if perform_range_request_check and fetched_content_length > 0:
+            sample_ranges = []
+            sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
+            if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
+                middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
+                middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
+                sample_ranges.append((middle_start, middle_end))
+            if fetched_content_length > RANGE_SAMPLE_SIZE:
+                last_start = fetched_content_length - RANGE_SAMPLE_SIZE
+                sample_ranges.append((last_start, fetched_content_length - 1))
+
+            sample_ranges = sorted(list(set(sample_ranges)))
+
+            for start, end in sample_ranges:
+                sample_content: bytes = response.content[start : end + 1]
+                fetched_sample_hashes_list.append(zlib.crc32(sample_content))
+        fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
+
+        logger.debug(f"Fetched full content for {url} (Status: {response.status_code}). Content-Length: {fetched_content_length}")
+        return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
 
 
     def _get_cache_channel_list_filepath(self) -> str:
@@ -1153,32 +1197,19 @@ class TvsLeanScraper:
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
-        for _ in range(2):
-            try:
-                response: requests.Response = self.session.head(url, headers=headers, allow_redirects=True, timeout=10)
-                if self.stop_event.is_set():
-                    return original_image_url
-                response.raise_for_status()
+        for _ in range(2): # Retries for image checks
+            response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
 
-                if response.status_code == 200:
-                    final_image_url: str = response.url
-                    logger.debug(f"Item {item_key} - Image URL check successful ({response.status_code}). Using URL: {final_image_url}")
-                else:
-                    logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
-                    final_image_url = original_image_url
+            if response is None:
+                logger.warning(f"Item {item_key} - Image URL check failed for {url}. Falling back to original URL: {original_image_url}")
+                return original_image_url
+
+            if response.status_code == 200:
+                final_image_url: str = response.url
+                logger.debug(f"Item {item_key} - Image URL check successful ({response.status_code}). Using URL: {final_image_url}")
                 return final_image_url
-
-            except requests.exceptions.HTTPError as e:
-                logger.warning(f"Item {item_key} - Image URL check failed (HTTP Error {e.response.status_code}) for {url}: {e}. Falling back to original URL: {original_image_url}")
-                return original_image_url
-            except requests.exceptions.Timeout as e:
-                logger.warning(f"Item {item_key} - Image URL check timed out for {url}: {e}. Falling back to original URL: {original_image_url}")
-                return original_image_url
-            except requests.exceptions.ConnectionError as e:
-                logger.warning(f"Item {item_key} - Image URL connection error for {url}: {e}. Falling back to original URL: {original_image_url}")
-                return original_image_url
-            except requests.exceptions.RequestException as e:
-                logger.error(f"An unexpected RequestException occurred for {url}: {e}")
+            else:
+                logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
                 return original_image_url
 
         logger.error(f"Failed to fetch {url} after retrying.")
