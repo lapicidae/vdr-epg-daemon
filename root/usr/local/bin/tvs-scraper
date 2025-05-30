@@ -1421,17 +1421,19 @@ class TvsLeanScraper:
 
     def _proactive_cache_cleanup(self) -> None:
         """
-        Proactively removes stale cache files for ALL channels and dates,
-        not just those being actively scraped in the current run.
-        This ensures that directories become truly empty if all their files are stale.
+        Proactively removes cache files that are outside the MAX_DAYS_TO_SCRAPE window.
+        This ensures that directories become truly empty if all their files are irrelevant.
+        The TTL, last_modified, and cached_at timestamps are ignored for this cleanup.
         """
         if self.stop_event.is_set():
             logger.debug("Stop event set. Aborting proactive cache cleanup.")
             return
 
-        logger.debug(f"Starting proactive cleanup of stale cache files in {self.processed_data_cache_base_dir}...")
-        current_time_utc = datetime.now(timezone.utc)
+        logger.debug(f"Starting proactive cleanup of cache files based on MAX_DAYS_TO_SCRAPE in {self.processed_data_cache_base_dir}...")
+
         max_relevant_date = datetime.now().date() + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
+
+        earliest_allowed_date = datetime.now().date() - timedelta(days=1)
 
         for channel_dir_name in os.listdir(self.processed_data_cache_base_dir):
             if self.stop_event.is_set():
@@ -1455,35 +1457,18 @@ class TvsLeanScraper:
                             date_str = filename.replace('.json', '')
                             file_date = datetime.strptime(date_str, '%Y%m%d').date()
 
-                            with open(filepath, 'r', encoding='utf-8') as f:
-                                cache_content = json.load(f)
+                            is_outside_relevant_range = not (earliest_allowed_date <= file_date <= max_relevant_date)
 
-                            cached_at_str = cache_content.get('cached_at')
-                            is_stale = False
-
-                            if cached_at_str:
-                                cached_at = datetime.fromisoformat(cached_at_str)
-                                if (current_time_utc - cached_at.replace(tzinfo=timezone.utc)).total_seconds() >= self.cache_ttl:
-                                    is_stale = True
-                            else:
-                                is_stale = True
-
-                            if not self.keep_past_cache and file_date < (datetime.now().date() - timedelta(days=1)):
-                                is_stale = True
-
-                            if file_date > max_relevant_date:
-                                is_stale = True
-
-                            if is_stale:
-                                logger.debug(f"Deleting stale cache file: {filepath}")
+                            if is_outside_relevant_range:
+                                logger.debug(f"Deleting cache file outside relevant date range: {filepath} (Date: {file_date.strftime('%Y-%m-%d')})")
                                 os.remove(filepath)
-                        except (json.JSONDecodeError, ValueError, IOError) as e:
-                            logger.warning(f"Error processing cache file {filepath} during proactive cleanup: {e}. Deleting corrupted file.")
+                        except (ValueError, IOError) as e:
+                            logger.warning(f"Error processing cache file {filepath} during proactive cleanup (date parsing/IO): {e}. Deleting corrupted file.")
                             if os.path.exists(filepath):
                                 os.remove(filepath)
                         except Exception as e:
                             logger.error(f"Unexpected error during proactive cache cleanup for {filepath}: {e}")
-        logger.debug("Finished proactive cleanup of stale cache files.")
+        logger.debug("Finished proactive cleanup of cache files.")
 
     def _cleanup_empty_cache_dirs(self) -> None:
         """
