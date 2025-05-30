@@ -104,6 +104,407 @@ def _sanitize_xml_string(text: Optional[str]) -> Optional[str]:
     return _INVALID_XML_CHARS_PATTERN.sub('', text)
 
 
+def _convert_unix_to_xmltv_time(unix_timestamp_str: Optional[str]) -> Optional[str]:
+    """
+    Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
+
+    :param unix_timestamp_str: Unix timestamp as a string.
+    :type unix_timestamp_str: Optional[str]
+    :returns: XMLTV formatted time string, or None if conversion fails.
+    :rtype: Optional[str]
+    """
+    if not unix_timestamp_str:
+        return None
+    try:
+        unix_timestamp: int = int(unix_timestamp_str)
+
+        if unix_timestamp < 946684800:  # Sat Jan 01 2000 00:00:00 GMT+0000
+            logger.warning(f"Unrealistically old Unix timestamp '{unix_timestamp_str}' for XMLTV conversion received. Skipping.")
+            return None
+
+        dt_object: datetime = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+
+        return dt_object.strftime('%Y%m%d%H%M%S +0000')
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Could not convert Unix timestamp '{unix_timestamp_str}' to XMLTV time: {e}")
+        return None
+
+
+def _process_rating_string(original_rating_string: Optional[str]) -> Optional[str]:
+    """
+    Cleans and formats the rating string.
+
+    :param original_rating_string: The raw rating string.
+    :type original_rating_string: Optional[str]
+    :returns: The cleaned and formatted rating string, or None if input was None.
+    :rtype: Optional[str]
+    """
+    if not original_rating_string:
+        return None
+    parts: List[str] = [p.strip() for p in original_rating_string.split('/')]
+    filtered_parts: List[str] = [part for part in parts if '*' in part]
+    return " / ".join(filtered_parts) if filtered_parts else None
+
+
+class TvsHtmlParser:
+    """
+    Encapsulates all HTML parsing logic for TVSpielfilm.de.
+
+    This class is responsible for extracting data from lxml.html elements.
+    """
+    def __init__(self):
+        """
+        Initializes the TvsHtmlParser with all necessary CSS selectors
+        and regular expressions for parsing.
+        """
+        self.re_source_id_html = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
+        self.re_image_url_match = re.compile(r"url\(['\"]?(.*?)['\"]?\)")
+        self.re_image_base_path_match = re.compile(r'(.*?)_(\d+)\.jpg$')
+        self.re_log_item_id_cleanup = re.compile(r'[^a-zA-Z0-9]')
+        self.re_genre_pipe_match = re.compile(r'\|\s*(.*)')
+        self.re_duration_minutes_match = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
+        self.re_fsk_match = re.compile(r'(\d+)')
+        self.re_rating_class_match = re.compile(r'rating-(\d+)')
+        self.re_adsc_sparte_match = re.compile(r'"adsc_sparte":"([^"]+)"')
+
+        self.selector_sender_links: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
+        self.selector_li_elements: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
+        self.selector_title_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('strong.tv-tip-heading span.title')
+        self.selector_detail_link_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.image-text-holder a.flex-row.js-track-link')
+        self.selector_image_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.program-image div.default-image')
+        self.selector_description_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.broadcast-detail__description')
+        self.selector_short_desc_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_long_desc_paragraphs: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p:not(.headline)')
+        self.selector_genre_underline_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.stage-underline.gray span.text-row')
+        self.selector_infos_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_genre_dt_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_genre_tag_general: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre-info span.genre-text')
+        self.selector_genre_time_tag_schedule: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre span.genre-time')
+        self.selector_infos_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_infos_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_infos_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
+        self.selector_headline_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_headline_cast: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_headline_crew: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+        self.selector_cast_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_cast_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_cast_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_crew_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_crew_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_crew_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_crew_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
+        self.selector_content_rating_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.content-rating')
+        self.selector_num_rating_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__rating-genre__thumb')
+        self.selector_txt_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('blockquote.content-rating__rating-genre__conclusion-quote p')
+        self.selector_rating_list_items: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('ul.content-rating__rating-genre__list li.content-rating__rating-genre__list-item')
+        self.selector_rating_label: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('span.content-rating__rating-genre__list-item__label')
+        self.selector_rating_span: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('span.content-rating__rating-genre__list-item__rating')
+        self.selector_imdb_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__imdb-rating__rating-value')
+
+    def parse_channel_list(self, html_content: str) -> List[Dict[str, str]]:
+        """
+        Parses the list of channels from the HTML content of the main sender page.
+
+        :param html_content: The HTML content of the sender page.
+        :type html_content: str
+        :returns: A list of dictionaries, each containing 'name', 'url', and 'source_id' for a channel.
+        :rtype: List[Dict[str, str]]
+        """
+        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
+        sender_links: List[lxml.html.HtmlElement] = self.selector_sender_links(root)
+        logger.debug(f"Found {len(sender_links)} potential channel links.")
+
+        channel_data: List[Dict[str, str]] = []
+        for link in sender_links:
+            href: Optional[str] = link.get('href')
+            name: Optional[str] = _sanitize_xml_string(link.text_content().strip())
+
+            source_id: Optional[str] = None
+            if href:
+                source_id_match: Optional[re.Match[str]] = self.re_source_id_html.search(href)
+                if source_id_match:
+                    source_id = source_id_match.group(1).upper()
+
+            if not source_id:
+                tracking_data_str: Optional[str] = link.get('data-tracking-point')
+                if tracking_data_str:
+                    try:
+                        tracking_data: Dict[str, Any] = json.loads(tracking_data_str)
+                        if 'channel' in tracking_data:
+                            source_id = str(tracking_data['channel']).upper()
+                    except json.JSONDecodeError:
+                        logger.debug(f"Could not parse data-tracking-point for {name}: {tracking_data_str}")
+
+            if source_id and name:
+                logger.debug(f"Processing channel: {name} (ID: {source_id}, Href: {href})")
+                channel_data.append({
+                    'name': name,
+                    'url': f"{BASE_URL}{href}" if href and href.startswith('/') else (href if href else ''),
+                    'source_id': source_id
+                })
+            else:
+                logger.warning(f"Could not extract source_id or name for channel: {name} (Href: {href}). Skipping.")
+        return channel_data
+
+    def parse_daily_schedule_items(self, html_content: str, channel_info: Dict[str, str], current_date: datetime.date, img_size: str) -> List[Dict[str, Any]]:
+        """
+        Parses the schedule for a single channel and a specific date from the HTML content.
+        This method extracts basic program information and detail links/image paths,
+        but does not fetch detail pages or check image URLs.
+
+        :param html_content: The HTML content of the schedule page.
+        :type html_content: str
+        :param channel_info: Dictionary containing channel information ('name', 'url', 'source_id').
+        :type channel_info: Dict[str, str]
+        :param current_date: The date for which the schedule is being parsed.
+        :type current_date: datetime.date
+        :param img_size: The desired image size ("300" or "600").
+        :type img_size: str
+        :returns: A list of dictionaries, each representing a program item,
+                  with basic information and links/image paths for further processing.
+        :rtype: List[Dict[str, Any]]
+        """
+        channel_name: str = channel_info['name']
+        channel_source_id: str = channel_info['source_id']
+
+        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
+
+        extracted_items: List[Dict[str, Any]] = []
+
+        for li_element in self.selector_li_elements(root):
+            item_data: Dict[str, Any] = {}
+
+            item_data['type'] = 'program'
+            item_data['channelname'] = channel_name
+            item_data['sourceid'] = channel_source_id
+            item_data['date'] = current_date.strftime('%Y-%m-%d')
+
+            item_data['starttime'] = li_element.get('data-start-time')
+            item_data['endtime'] = li_element.get('data-end-time')
+
+            title_tag: List[lxml.html.HtmlElement] = self.selector_title_tag(li_element)
+            if title_tag:
+                item_data['title'] = _sanitize_xml_string(title_tag[0].text_content().strip())
+            else:
+                item_data['title'] = None
+
+            detail_link_tag: List[lxml.html.HtmlElement] = self.selector_detail_link_tag(li_element)
+            if detail_link_tag:
+                detail_href: Optional[str] = detail_link_tag[0].get('href')
+                if detail_href:
+                    if not detail_href.startswith('http'):
+                        item_data['link'] = f"{BASE_URL}{detail_href}"
+                    else:
+                        item_data['link'] = detail_href
+            else:
+                item_data['link'] = None
+
+            item_data['eventid'] = li_element.get('data-id')
+
+            image_div: List[lxml.html.HtmlElement] = self.selector_image_div(li_element)
+            if image_div:
+                style_attr: Optional[str] = image_div[0].get('style')
+                if style_attr:
+                    image_url_match: Optional[re.Match[str]] = self.re_image_url_match.search(style_attr)
+                    if image_url_match:
+                        original_full_image_url: str = image_url_match.group(1)
+                        base_image_url_match: Optional[re.Match[str]] = self.re_image_base_path_match.match(original_full_image_url)
+                        if base_image_url_match:
+                            item_data['image_base_path'] = base_image_url_match.group(1)
+                        else:
+                            item_data['image_base_path'] = None
+
+                        # Only the path is extracted here, validation happens later in the scraper
+                        item_data['image_url'] = f"{item_data['image_base_path']}_{img_size}.jpg" if item_data['image_base_path'] else original_full_image_url
+                    else:
+                        item_data['image_base_path'] = None
+                        item_data['image_url'] = None
+                else:
+                    item_data['image_base_path'] = None
+                    item_data['image_url'] = None
+            else:
+                item_data['image_base_path'] = None
+                item_data['image_url'] = None
+
+            extracted_items.append(item_data)
+        return extracted_items
+
+    def parse_program_details(self, html_content: str) -> Dict[str, Any]:
+        """
+        Parses the detail page of a program to extract additional information.
+
+        :param html_content: The HTML content of the program detail page.
+        :type html_content: str
+        :returns: A dictionary containing detailed program information.
+        :rtype: Dict[str, Any]
+        """
+        detail_data: Dict[str, Any] = {
+            'shortdescription': None, 'longdescription': None, 'genre': None,
+            'original_title': None, 'country': None, 'year': None, 'duration': None,
+            'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+            'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+            'imdbrating': None, 'keyword': None
+        }
+        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
+
+        adsc_sparte_match: Optional[re.Match[str]] = self.re_adsc_sparte_match.search(html_content)
+        if adsc_sparte_match:
+            detail_data['keyword'] = _sanitize_xml_string(adsc_sparte_match.group(1).strip())
+
+        description_section: List[lxml.html.HtmlElement] = self.selector_description_section(root)
+        if description_section:
+            short_desc_tag: List[lxml.html.HtmlElement] = self.selector_short_desc_tag(description_section[0])
+            if short_desc_tag:
+                detail_data['shortdescription'] = _sanitize_xml_string(short_desc_tag[0].text_content().strip())
+
+            long_desc_paragraphs: List[lxml.html.HtmlElement] = self.selector_long_desc_paragraphs(description_section[0])
+            if long_desc_paragraphs:
+                detail_data['longdescription'] = _sanitize_xml_string("\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()]))
+
+        genre_underline_tag: List[lxml.html.HtmlElement] = self.selector_genre_underline_tag(root)
+        if genre_underline_tag:
+            genre_text: str = genre_underline_tag[0].text_content().strip()
+            genre_match: Optional[re.Match[str]] = self.re_genre_pipe_match.search(genre_text)
+            if genre_match:
+                detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
+            else:
+                detail_data['genre'] = _sanitize_xml_string(genre_text.strip())
+
+        if not detail_data['genre']:
+            all_infos_containers: List[lxml.html.HtmlElement] = self.selector_infos_container(root)
+            for infos_container_elem in all_infos_containers:
+                headline_p_elements: List[lxml.html.HtmlElement] = self.selector_headline_infos(infos_container_elem)
+                if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
+                    for dt_element in self.selector_infos_dt(infos_container_elem):
+                        if dt_element.text_content().strip() == "Genre":
+                            genre_dd: Optional[lxml.html.HtmlElement] = dt_element.getnext()
+                            if genre_dd:
+                                detail_data['genre'] = _sanitize_xml_string(genre_dd.text_content().strip())
+                                break
+                if detail_data['genre']:
+                    break
+
+        if not detail_data['genre']:
+            genre_tag_general: List[lxml.html.HtmlElement] = self.selector_genre_tag_general(root)
+            if genre_tag_general:
+                detail_data['genre'] = _sanitize_xml_string(genre_tag_general[0].text_content().strip())
+            else:
+                genre_time_tag_schedule: List[lxml.html.HtmlElement] = self.selector_genre_time_tag_schedule(root)
+                if genre_time_tag_schedule:
+                    genre_match = self.re_genre_pipe_match.search(genre_time_tag_schedule[0].text_content().strip())
+                    if genre_match:
+                        detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
+                    else:
+                        detail_data['genre'] = _sanitize_xml_string(genre_time_tag_schedule[0].text_content().strip())
+
+        all_infos_containers = self.selector_infos_container(root)
+        for infos_container_elem in all_infos_containers:
+            headline_p_elements = self.selector_headline_infos(infos_container_elem)
+            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
+                infos_dl: List[lxml.html.HtmlElement] = self.selector_infos_dl(infos_container_elem)
+                if infos_dl:
+                    dt_elements: List[lxml.html.HtmlElement] = self.selector_infos_dt(infos_dl[0])
+                    dd_elements: List[lxml.html.HtmlElement] = self.selector_infos_dd(infos_dl[0])
+                    for dt, dd in zip(dt_elements, dd_elements):
+                        dt_text: str = dt.text_content().strip()
+                        dd_text: str = dd.text_content().strip()
+                        if dt_text == 'Originaltitel':
+                            detail_data['original_title'] = _sanitize_xml_string(dd_text)
+                        elif dt_text == 'Land':
+                            detail_data['country'] = _sanitize_xml_string(dd_text)
+                        elif dt_text == 'Jahr':
+                            try:
+                                detail_data['year'] = int(dd_text)
+                            except ValueError:
+                                pass
+                        elif dt_text == 'Länge':
+                            duration_minutes_match: Optional[re.Match[str]] = self.re_duration_minutes_match.search(dd_text)
+                            if duration_minutes_match:
+                                detail_data['duration'] = int(duration_minutes_match.group(1)) * 60
+                        elif dt_text == 'FSK':
+                            fsk_match: Optional[re.Match[str]] = self.re_fsk_match.search(dd_text)
+                            if fsk_match:
+                                try:
+                                    detail_data['parentalrating'] = int(fsk_match.group(1))
+                                except ValueError:
+                                    pass
+                break
+
+        all_cast_containers: List[lxml.html.HtmlElement] = self.selector_cast_container(root)
+        for cast_container_elem in all_cast_containers:
+            headline_p_elements = self.selector_headline_cast(cast_container_elem)
+            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Cast":
+                cast_list: List[str] = []
+                cast_dl: List[lxml.html.HtmlElement] = self.selector_cast_dl(cast_container_elem)
+                if cast_dl:
+                    for dt_tag in self.selector_cast_dt(cast_dl[0]):
+                        role: str = dt_tag.text_content().strip()
+                        actor_dd_tag: Optional[lxml.html.HtmlElement] = dt_tag.getnext()
+                        if actor_dd_tag is not None:
+                            actor_name: str = actor_dd_tag.text_content().strip()
+                            if actor_name:
+                                cast_list.append(_sanitize_xml_string(f"{actor_name} ({role})" if role else actor_name) or "")
+                detail_data['cast'] = ", ".join(cast_list) if cast_list else None
+                break
+
+        all_crew_containers: List[lxml.html.HtmlElement] = self.selector_crew_container(root)
+        for crew_container_elem in all_crew_containers:
+            headline_p_elements = self.selector_headline_crew(crew_container_elem)
+            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Crew":
+                crew_dl: List[lxml.html.HtmlElement] = self.selector_crew_dl(crew_container_elem)
+                if crew_dl:
+                    dt_elements = self.selector_crew_dt(crew_dl[0])
+                    dd_elements = self.selector_crew_dd(crew_dl[0])
+                    for dt, dd in zip(dt_elements, dd_elements):
+                        dt_text: str = dt.text_content().strip()
+                        dd_text: str = dd.text_content().strip()
+                        if dt_text == 'Regie':
+                            detail_data['director'] = _sanitize_xml_string(dd_text)
+                        elif dt_text == 'Drehbuch':
+                            sanitized_dd_text: Optional[str] = _sanitize_xml_string(dd_text)
+                            detail_data['screenplay'] = f"{detail_data['screenplay']}, {sanitized_dd_text}" if detail_data['screenplay'] else sanitized_dd_text
+                        elif dt_text == 'Kamera':
+                            detail_data['camera'] = _sanitize_xml_string(dd_text)
+                break
+
+        content_rating_section: List[lxml.html.HtmlElement] = self.selector_content_rating_section(root)
+        if content_rating_section:
+            num_rating_div: List[lxml.html.HtmlElement] = self.selector_num_rating_div(content_rating_section[0])
+            if num_rating_div:
+                class_attr: List[str] = num_rating_div[0].get('class', '').split()
+                rating_class_match: Optional[re.Match[str]] = self.re_rating_class_match.search(' '.join(class_attr))
+                if rating_class_match:
+                    try:
+                        detail_data['numrating'] = int(rating_class_match.group(1))
+                    except ValueError:
+                        logger.warning(f"Could not convert numrating class '{rating_class_match.group(1)}' to integer.")
+
+            txt_rating_tag: List[lxml.html.HtmlElement] = self.selector_txt_rating_tag(content_rating_section[0])
+            if txt_rating_tag:
+                detail_data['txtrating'] = _sanitize_xml_string(txt_rating_tag[0].text_content().strip())
+
+            rating_list_items: List[lxml.html.HtmlElement] = self.selector_rating_list_items(content_rating_section[0])
+            if rating_list_items:
+                ratings_parts: List[str] = []
+                for item in rating_list_items:
+                    label: List[lxml.html.HtmlElement] = self.selector_rating_label(item)
+                    rating_span: List[lxml.html.HtmlElement] = self.selector_rating_span(item)
+                    if label and rating_span:
+                        rating_class_match = self.re_rating_class_match.search(' '.join(rating_span[0].get('class', '').split()))
+                        if rating_class_match:
+                            num_dots: int = int(rating_class_match.group(1))
+                            stars: str = '*' * num_dots
+                            ratings_parts.append(f"{label[0].text_content().strip()} {stars}")
+                if ratings_parts:
+                    detail_data['rating'] = _sanitize_xml_string(" / ".join(ratings_parts))
+
+            imdb_rating_tag: List[lxml.html.HtmlElement] = self.selector_imdb_rating_tag(content_rating_section[0])
+            if imdb_rating_tag:
+                detail_data['imdbrating'] = _sanitize_xml_string(imdb_rating_tag[0].text_content().strip())
+
+        return detail_data
+
+
 class TvsLeanScraper:
     """
     Encapsulates the scraping logic for TVSpielfilm.de.
@@ -129,7 +530,7 @@ class TvsLeanScraper:
         :type img_size: Optional[str]
         :param check_img: Boolean to enable/disable image URL validity checks.
         :type check_img: Optional[bool]
-        :param start_date_str: Specific date to scrape inYYYYMMDD format.
+        :param start_date_str: Specific date to scrape in YYYYMMDD format.
         :type start_date_str: Optional[str]
         :param cache_dir_path: Custom directory for cache files.
         :type cache_dir_path: Optional[str]
@@ -283,50 +684,7 @@ class TvsLeanScraper:
             logger.info("Explicit --cache-clear requested. All caches will be invalidated/ignored.")
 
         self.stop_event = threading.Event()
-
-        self.re_source_id_html = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
-        self.re_image_url_match = re.compile(r"url\(['\"]?(.*?)['\"]?\)")
-        self.re_image_base_path_match = re.compile(r'(.*?)_(\d+)\.jpg$')
-        self.re_log_item_id_cleanup = re.compile(r'[^a-zA-Z0-9]')
-        self.re_genre_pipe_match = re.compile(r'\|\s*(.*)')
-        self.re_duration_minutes_match = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
-        self.re_fsk_match = re.compile(r'(\d+)')
-        self.re_rating_class_match = re.compile(r'rating-(\d+)')
-        self.re_adsc_sparte_match = re.compile(r'"adsc_sparte":"([^"]+)"')
-
-        self.selector_sender_links: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
-        self.selector_li_elements: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
-        self.selector_title_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('strong.tv-tip-heading span.title')
-        self.selector_detail_link_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.image-text-holder a.flex-row.js-track-link')
-        self.selector_image_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.program-image div.default-image')
-        self.selector_description_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.broadcast-detail__description')
-        self.selector_short_desc_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_long_desc_paragraphs: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p:not(.headline)')
-        self.selector_genre_underline_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.stage-underline.gray span.text-row')
-        self.selector_infos_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_genre_dt_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_genre_tag_general: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre-info span.genre-text')
-        self.selector_genre_time_tag_schedule: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre span.genre-time')
-        self.selector_infos_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
-        self.selector_infos_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_infos_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
-        self.selector_headline_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_headline_cast: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_headline_crew: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_cast_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_cast_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
-        self.selector_cast_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_crew_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_crew_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
-        self.selector_crew_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_crew_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
-        self.selector_content_rating_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.content-rating')
-        self.selector_num_rating_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__rating-genre__thumb')
-        self.selector_txt_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('blockquote.content-rating__rating-genre__conclusion-quote p')
-        self.selector_rating_list_items: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('ul.content-rating__rating-genre__list li.content-rating__rating-genre__list-item')
-        self.selector_rating_label: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('span.content-rating__rating-genre__list-item__label')
-        self.selector_rating_span: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('span.content-rating__rating-genre__list-item__rating')
-        self.selector_imdb_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__imdb-rating__rating-value')
+        self.html_parser = TvsHtmlParser()
 
     def _build_schedule_url(self, channel_url: str, current_date: datetime.date) -> str:
         """
@@ -341,21 +699,6 @@ class TvsLeanScraper:
         """
         date_str: str = current_date.strftime('%Y-%m-%d')
         return f"{channel_url}?date={date_str}"
-
-    def _get_formatted_image_url(self, image_base_path: Optional[str], img_size: str) -> Optional[str]:
-        """
-        Constructs the full image URL based on the base path and desired size.
-
-        :param image_base_path: The base path of the image without size or extension.
-        :type image_base_path: Optional[str]
-        :param img_size: The desired image size ("300" or "600").
-        :type img_size: str
-        :returns: The formatted image URL, or None if `image_base_path` is None.
-        :rtype: Optional[str]
-        """
-        if image_base_path:
-            return f"{image_base_path}_{img_size}.jpg"
-        return None
 
     def _make_request(self, method: str, url: str, headers: Dict[str, str], allow_redirects: bool, timeout: int, log_prefix: str = "") -> Optional[requests.Response]:
         """
@@ -394,7 +737,7 @@ class TvsLeanScraper:
 
             time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
 
-            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status()
             return response
         except requests.exceptions.RequestException as e:
             logger.error(f"{log_prefix}Request failed for {url} ({method.upper()}): {e}")
@@ -474,7 +817,7 @@ class TvsLeanScraper:
             response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Conditional GET] ")
 
             if response is None:
-                return None, None, None, None, None # Request failed, return None
+                return None, None, None, None, None
 
             if response.status_code == 304:
                 logger.debug(f"Resource {url} not modified (304). Using cached data.")
@@ -666,7 +1009,7 @@ class TvsLeanScraper:
                 fetched_sample_hashes_list.append(zlib.crc32(sample_content))
         fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
 
-        logger.debug(f"Fetched full content for {url} (Status: {response.status_code}). Content-Length: {fetched_content_length}")
+        logger.debug(f"Full content fetched for {url} (Status: {response.status_code}). Content-Length: {fetched_content_length}")
         return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
 
 
@@ -773,8 +1116,7 @@ class TvsLeanScraper:
 
     def _get_channel_list(self) -> List[Dict[str, str]]:
         """
-        Parses the list of channels from the main sender page (m.tvspielfilm.de/sender/)
-        using lxml.html and cssselect.
+        Fetches and parses the list of channels from the main sender page.
 
         :returns: A list of dictionaries, each containing 'name', 'url', and 'source_id' for a channel.
         :rtype: List[Dict[str, str]]
@@ -806,43 +1148,7 @@ class TvsLeanScraper:
 
         if response_content is not None:
             logger.info("HTML content for channel list was modified or fetched for the first time. Parsing new data.")
-            root: lxml.html.HtmlElement = lxml.html.fromstring(response_content)
-            sender_links: List[lxml.html.HtmlElement] = self.selector_sender_links(root)
-            logger.debug(f"Found {len(sender_links)} potential channel links.")
-
-            channel_data: List[Dict[str, str]] = []
-            for link in sender_links:
-                if self.stop_event.is_set():
-                    logger.debug("Stop event set. Aborting channel list parsing.")
-                    return []
-                href: Optional[str] = link.get('href')
-                name: Optional[str] = _sanitize_xml_string(link.text_content().strip())
-
-                source_id: Optional[str] = None
-                if href:
-                    source_id_match: Optional[re.Match[str]] = self.re_source_id_html.search(href)
-                    if source_id_match:
-                        source_id = source_id_match.group(1).upper()
-
-                if not source_id:
-                    tracking_data_str: Optional[str] = link.get('data-tracking-point')
-                    if tracking_data_str:
-                        try:
-                            tracking_data: Dict[str, Any] = json.loads(tracking_data_str)
-                            if 'channel' in tracking_data:
-                                source_id = str(tracking_data['channel']).upper()
-                        except json.JSONDecodeError:
-                            logger.debug(f"Could not parse data-tracking-point for {name}: {tracking_data_str}")
-
-                if source_id and name:
-                    logger.debug(f"Processing channel: {name} (ID: {source_id}, Href: {href})")
-                    channel_data.append({
-                        'name': name,
-                        'url': f"{BASE_URL}{href}" if href and href.startswith('/') else (href if href else ''),
-                        'source_id': source_id
-                    })
-                else:
-                    logger.warning(f"Could not extract source_id or name for channel: {name} (Href: {href}). Skipping.")
+            channel_data = self.html_parser.parse_channel_list(response_content)
 
             if self.enable_cache:
                 self._save_channel_list_cache(channel_data, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
@@ -857,326 +1163,6 @@ class TvsLeanScraper:
         else:
             logger.error("Failed to fetch channel list content and no cached data available.")
             return []
-
-    def _get_schedule_for_channel_and_date(self, channel_info: Dict[str, str], current_date: datetime.date, html_content: str) -> List[Dict[str, Any]]:
-        """
-        Parses the schedule for a single channel and a specific date using lxml.html and cssselect.
-
-        :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
-        :type channel_info: Dict[str, str]
-        :param current_date: The date for which the schedule is being parsed.
-        :type current_date: datetime.date
-        :param html_content: The HTML content of the schedule page.
-        :type html_content: str
-        :returns: A list of dictionaries, each representing a program item.
-        :rtype: List[Dict[str, Any]]
-        """
-        if self.stop_event.is_set():
-            logger.debug(f"Stop event set. Aborting schedule parsing for {channel_info['name']} on {current_date.strftime('%Y-%m-%d')}.")
-            return []
-
-        channel_name: str = channel_info['name']
-        channel_source_id: str = channel_info['source_id']
-
-        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
-
-        extracted_items: List[Dict[str, Any]] = []
-
-        for li_element in self.selector_li_elements(root):
-            if self.stop_event.is_set():
-                logger.debug(f"Stop event set. Aborting item parsing for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
-                return []
-            item_data: Dict[str, Any] = {}
-
-            item_data['type'] = 'program'
-            item_data['channelname'] = channel_name
-            item_data['sourceid'] = channel_source_id
-            item_data['date'] = current_date.strftime('%Y-%m-%d')
-
-            item_data['starttime'] = li_element.get('data-start-time')
-            item_data['endtime'] = li_element.get('data-end-time')
-
-            title_tag: List[lxml.html.HtmlElement] = self.selector_title_tag(li_element)
-            if title_tag:
-                item_data['title'] = _sanitize_xml_string(title_tag[0].text_content().strip())
-            else:
-                item_data['title'] = None
-
-            detail_link_tag: List[lxml.html.HtmlElement] = self.selector_detail_link_tag(li_element)
-            if detail_link_tag:
-                detail_href: Optional[str] = detail_link_tag[0].get('href')
-                if detail_href:
-                    if not detail_href.startswith('http'):
-                        item_data['link'] = f"{BASE_URL}{detail_href}"
-                    else:
-                        item_data['link'] = detail_href
-            else:
-                item_data['link'] = None
-
-            item_data['eventid'] = li_element.get('data-id')
-
-            image_div: List[lxml.html.HtmlElement] = self.selector_image_div(li_element)
-            if image_div:
-                style_attr: Optional[str] = image_div[0].get('style')
-                if style_attr:
-                    image_url_match: Optional[re.Match[str]] = self.re_image_url_match.search(style_attr)
-                    if image_url_match:
-                        original_full_image_url: str = image_url_match.group(1)
-                        base_image_url_match: Optional[re.Match[str]] = self.re_image_base_path_match.match(original_full_image_url)
-                        if base_image_url_match:
-                            item_data['image_base_path'] = base_image_url_match.group(1)
-                        else:
-                            item_data['image_base_path'] = None
-
-                        item_data['image_url'] = self._get_formatted_image_url(item_data['image_base_path'], self.img_size) or original_full_image_url
-                    else:
-                        item_data['image_base_path'] = None
-                        item_data['image_url'] = None
-                else:
-                    item_data['image_base_path'] = None
-                    item_data['image_url'] = None
-            else:
-                item_data['image_base_path'] = None
-                item_data['image_url'] = None
-
-            if self.check_img and item_data['image_url']:
-                orig_img: str = item_data['image_url']
-                item_id_for_log: str = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
-                logger.debug(f"Item {item_id_for_log}: Image URL check scheduled for: {item_data['image_url']}")
-                item_data['image_url'] = self._check_image_url_head(item_data['image_url'], orig_img, item_id_for_log)
-
-            if item_data['link']:
-                detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
-                item_data.update(detail_page_data)
-            else:
-                logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
-                item_data.update({
-                    'shortdescription': None, 'longdescription': None, 'genre': None,
-                    'original_title': None, 'country': None, 'year': None, 'duration': None,
-                    'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-                    'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-                    'imdbrating': None, 'keyword': None
-                })
-
-            item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
-            item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'))
-            item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'))
-
-            extracted_items.append(item_data)
-        return extracted_items
-
-    @functools.lru_cache(maxsize=128)
-    def parse_detail_page(self, detail_url: str) -> Dict[str, Any]:
-        """
-        Parses the detail page of a program to extract additional information
-        using lxml.html and cssselect.
-
-        :param detail_url: The URL of the program's detail page.
-        :type detail_url: str
-        :returns: A dictionary containing detailed program information.
-        :rtype: Dict[str, Any]
-        """
-        if self.stop_event.is_set():
-            logger.debug(f"Stop event set. Aborting detail page parsing for {detail_url}.")
-            return {
-                'shortdescription': None, 'longdescription': None, 'genre': None,
-                'original_title': None, 'country': None, 'year': None, 'duration': None,
-                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-                'imdbrating': None, 'keyword': None
-            }
-
-        detail_data: Dict[str, Any] = {
-            'shortdescription': None, 'longdescription': None, 'genre': None,
-            'original_title': None, 'country': None, 'year': None, 'duration': None,
-            'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-            'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-            'imdbrating': None, 'keyword': None
-        }
-        response_content, _, _, _, _ = self.fetch_url(detail_url, is_detail_page=True)
-
-        if not response_content:
-            logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
-            return detail_data
-
-        root: lxml.html.HtmlElement = lxml.html.fromstring(response_content)
-
-        adsc_sparte_match: Optional[re.Match[str]] = self.re_adsc_sparte_match.search(response_content)
-        if adsc_sparte_match:
-            detail_data['keyword'] = _sanitize_xml_string(adsc_sparte_match.group(1).strip())
-
-        description_section: List[lxml.html.HtmlElement] = self.selector_description_section(root)
-        if description_section:
-            short_desc_tag: List[lxml.html.HtmlElement] = self.selector_short_desc_tag(description_section[0])
-            if short_desc_tag:
-                detail_data['shortdescription'] = _sanitize_xml_string(short_desc_tag[0].text_content().strip())
-
-            long_desc_paragraphs: List[lxml.html.HtmlElement] = self.selector_long_desc_paragraphs(description_section[0])
-            if long_desc_paragraphs:
-                detail_data['longdescription'] = _sanitize_xml_string("\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()]))
-
-        genre_underline_tag: List[lxml.html.HtmlElement] = self.selector_genre_underline_tag(root)
-        if genre_underline_tag:
-            genre_text: str = genre_underline_tag[0].text_content().strip()
-            genre_match: Optional[re.Match[str]] = self.re_genre_pipe_match.search(genre_text)
-            if genre_match:
-                detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
-            else:
-                detail_data['genre'] = _sanitize_xml_string(genre_text.strip())
-
-        if not detail_data['genre']:
-            all_infos_containers: List[lxml.html.HtmlElement] = self.selector_infos_container(root)
-            for infos_container_elem in all_infos_containers:
-                if self.stop_event.is_set():
-                    return detail_data
-                headline_p_elements: List[lxml.html.HtmlElement] = self.selector_headline_infos(infos_container_elem)
-                if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
-                    for dt_element in self.selector_infos_dt(infos_container_elem):
-                        if self.stop_event.is_set():
-                            return detail_data
-                        if dt_element.text_content().strip() == "Genre":
-                            genre_dd: Optional[lxml.html.HtmlElement] = dt_element.getnext()
-                            if genre_dd:
-                                detail_data['genre'] = _sanitize_xml_string(genre_dd.text_content().strip())
-                                break
-                if detail_data['genre']:
-                    break
-
-        if not detail_data['genre']:
-            genre_tag_general: List[lxml.html.HtmlElement] = self.selector_genre_tag_general(root)
-            if genre_tag_general:
-                detail_data['genre'] = _sanitize_xml_string(genre_tag_general[0].text_content().strip())
-            else:
-                genre_time_tag_schedule: List[lxml.html.HtmlElement] = self.selector_genre_time_tag_schedule(root)
-                if genre_time_tag_schedule:
-                    genre_match = self.re_genre_pipe_match.search(genre_time_tag_schedule[0].text_content().strip())
-                    if genre_match:
-                        detail_data['genre'] = _sanitize_xml_string(genre_match.group(1).strip())
-                    else:
-                        detail_data['genre'] = _sanitize_xml_string(genre_time_tag_schedule[0].text_content().strip())
-
-        all_infos_containers = self.selector_infos_container(root)
-        for infos_container_elem in all_infos_containers:
-            if self.stop_event.is_set():
-                return detail_data
-            headline_p_elements = self.selector_headline_infos(infos_container_elem)
-            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
-                infos_dl: List[lxml.html.HtmlElement] = self.selector_infos_dl(infos_container_elem)
-                if infos_dl:
-                    dt_elements: List[lxml.html.HtmlElement] = self.selector_infos_dt(infos_dl[0])
-                    dd_elements: List[lxml.html.HtmlElement] = self.selector_infos_dd(infos_dl[0])
-                    for dt, dd in zip(dt_elements, dd_elements):
-                        if self.stop_event.is_set():
-                            return detail_data
-                        dt_text: str = dt.text_content().strip()
-                        dd_text: str = dd.text_content().strip()
-                        if dt_text == 'Originaltitel':
-                            detail_data['original_title'] = _sanitize_xml_string(dd_text)
-                        elif dt_text == 'Land':
-                            detail_data['country'] = _sanitize_xml_string(dd_text)
-                        elif dt_text == 'Jahr':
-                            try:
-                                detail_data['year'] = int(dd_text)
-                            except ValueError:
-                                pass
-                        elif dt_text == 'Länge':
-                            duration_minutes_match: Optional[re.Match[str]] = self.re_duration_minutes_match.search(dd_text)
-                            if duration_minutes_match:
-                                detail_data['duration'] = int(duration_minutes_match.group(1)) * 60
-                        elif dt_text == 'FSK':
-                            fsk_match: Optional[re.Match[str]] = self.re_fsk_match.search(dd_text)
-                            if fsk_match:
-                                try:
-                                    detail_data['parentalrating'] = int(fsk_match.group(1))
-                                except ValueError:
-                                    pass
-                break
-
-        all_cast_containers: List[lxml.html.HtmlElement] = self.selector_cast_container(root)
-        for cast_container_elem in all_cast_containers:
-            if self.stop_event.is_set():
-                return detail_data
-            headline_p_elements = self.selector_headline_cast(cast_container_elem)
-            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Cast":
-                cast_list: List[str] = []
-                cast_dl: List[lxml.html.HtmlElement] = self.selector_cast_dl(cast_container_elem)
-                if cast_dl:
-                    for dt_tag in self.selector_cast_dt(cast_dl[0]):
-                        if self.stop_event.is_set():
-                            return detail_data
-                        role: str = dt_tag.text_content().strip()
-                        actor_dd_tag: Optional[lxml.html.HtmlElement] = dt_tag.getnext()
-                        if actor_dd_tag is not None:
-                            actor_name: str = actor_dd_tag.text_content().strip()
-                            if actor_name:
-                                cast_list.append(_sanitize_xml_string(f"{actor_name} ({role})" if role else actor_name) or "")
-                detail_data['cast'] = ", ".join(cast_list) if cast_list else None
-                break
-
-        all_crew_containers: List[lxml.html.HtmlElement] = self.selector_crew_container(root)
-        for crew_container_elem in all_crew_containers:
-            if self.stop_event.is_set():
-                return detail_data
-            headline_p_elements = self.selector_headline_crew(crew_container_elem)
-            if headline_p_elements and headline_p_elements[0].text_content().strip() == "Crew":
-                crew_dl: List[lxml.html.HtmlElement] = self.selector_crew_dl(crew_container_elem)
-                if crew_dl:
-                    dt_elements = self.selector_crew_dt(crew_dl[0])
-                    dd_elements = self.selector_crew_dd(crew_dl[0])
-                    for dt, dd in zip(dt_elements, dd_elements):
-                        if self.stop_event.is_set():
-                            return detail_data
-                        dt_text: str = dt.text_content().strip()
-                        dd_text: str = dd.text_content().strip()
-                        if dt_text == 'Regie':
-                            detail_data['director'] = _sanitize_xml_string(dd_text)
-                        elif dt_text == 'Drehbuch':
-                            sanitized_dd_text: Optional[str] = _sanitize_xml_string(dd_text)
-                            detail_data['screenplay'] = f"{detail_data['screenplay']}, {sanitized_dd_text}" if detail_data['screenplay'] else sanitized_dd_text
-                        elif dt_text == 'Kamera':
-                            detail_data['camera'] = _sanitize_xml_string(dd_text)
-                break
-
-        content_rating_section: List[lxml.html.HtmlElement] = self.selector_content_rating_section(root)
-        if content_rating_section:
-            if self.stop_event.is_set():
-                return detail_data
-            num_rating_div: List[lxml.html.HtmlElement] = self.selector_num_rating_div(content_rating_section[0])
-            if num_rating_div:
-                class_attr: List[str] = num_rating_div[0].get('class', '').split()
-                rating_class_match: Optional[re.Match[str]] = self.re_rating_class_match.search(' '.join(class_attr))
-                if rating_class_match:
-                    try:
-                        detail_data['numrating'] = int(rating_class_match.group(1))
-                    except ValueError:
-                        logger.warning(f"Could not convert numrating class '{rating_class_match.group(1)}' to integer.")
-
-            txt_rating_tag: List[lxml.html.HtmlElement] = self.selector_txt_rating_tag(content_rating_section[0])
-            if txt_rating_tag:
-                detail_data['txtrating'] = _sanitize_xml_string(txt_rating_tag[0].text_content().strip())
-
-            rating_list_items: List[lxml.html.HtmlElement] = self.selector_rating_list_items(content_rating_section[0])
-            if rating_list_items:
-                ratings_parts: List[str] = []
-                for item in rating_list_items:
-                    if self.stop_event.is_set():
-                        return detail_data
-                    label: List[lxml.html.HtmlElement] = self.selector_rating_label(item)
-                    rating_span: List[lxml.html.HtmlElement] = self.selector_rating_span(item)
-                    if label and rating_span:
-                        rating_class_match = self.re_rating_class_match.search(' '.join(rating_span[0].get('class', '').split()))
-                        if rating_class_match:
-                            num_dots: int = int(rating_class_match.group(1))
-                            stars: str = '*' * num_dots
-                            ratings_parts.append(f"{label[0].text_content().strip()} {stars}")
-                if ratings_parts:
-                    detail_data['rating'] = _sanitize_xml_string(" / ".join(ratings_parts))
-
-            imdb_rating_tag: List[lxml.html.HtmlElement] = self.selector_imdb_rating_tag(content_rating_section[0])
-            if imdb_rating_tag:
-                detail_data['imdbrating'] = _sanitize_xml_string(imdb_rating_tag[0].text_content().strip())
-
-        return detail_data
 
     def _check_image_url_head(self, url: str, original_image_url: str, item_key: str) -> str:
         """
@@ -1197,7 +1183,7 @@ class TvsLeanScraper:
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
-        for _ in range(2): # Retries for image checks
+        for _ in range(2):
             response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
 
             if response is None:
@@ -1206,7 +1192,7 @@ class TvsLeanScraper:
 
             if response.status_code == 200:
                 final_image_url: str = response.url
-                logger.debug(f"Item {item_key} - Image URL check successful ({response.status_code}). Using URL: {final_image_url}")
+                logger.debug(f"Item {item_key} - Image URL check successful (Status {response.status_code}). Using URL: {final_image_url}")
                 return final_image_url
             else:
                 logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
@@ -1360,7 +1346,7 @@ class TvsLeanScraper:
         It prioritizes fresh data from the local JSON cache. If stale or missing,
         it performs a conditional HTTP GET to check for updates.
 
-        :param channel_info: Dictionary containing channel 'name', 'url', and 'source_id'.
+        :param channel_info: Dictionary containing channel information ('name', 'url', 'source_id').
         :type channel_info: Dict[str, str]
         :param current_date: The date for which the schedule is being parsed.
         :type current_date: datetime.date
@@ -1417,17 +1403,52 @@ class TvsLeanScraper:
 
                 if response_content is not None:
                     logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} was modified or fetched for the first time. Parsing new data.")
-                    newly_parsed_items: List[Dict[str, Any]] = self._get_schedule_for_channel_and_date(
+                    # Parse basic schedule items
+                    basic_parsed_items: List[Dict[str, Any]] = self.html_parser.parse_daily_schedule_items(
+                        response_content,
                         channel_info,
                         current_date,
-                        response_content
+                        self.img_size
                     )
                     if self.stop_event.is_set():
                         return []
 
+                    # Additional processing for detail pages and image checks
+                    final_items_for_day: List[Dict[str, Any]] = []
+                    for item_data in basic_parsed_items:
+                        if self.stop_event.is_set():
+                            logger.debug(f"Stop event set. Aborting detail processing for {channel_name}.")
+                            return []
+
+                        # Image check
+                        if self.check_img and item_data.get('image_url'):
+                            orig_img: str = item_data['image_url']
+                            item_id_for_log: str = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.html_parser.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
+                            logger.debug(f"Item {item_id_for_log}: Image URL check scheduled for: {item_data['image_url']}")
+                            item_data['image_url'] = self._check_image_url_head(item_data['image_url'], orig_img, item_id_for_log)
+
+                        # Detail page parsing
+                        if item_data.get('link'):
+                            detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
+                            item_data.update(detail_page_data)
+                        else:
+                            logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
+                            item_data.update({
+                                'shortdescription': None, 'longdescription': None, 'genre': None,
+                                'original_title': None, 'country': None, 'year': None, 'duration': None,
+                                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+                                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+                                'imdbrating': None, 'keyword': None
+                            })
+
+                        item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
+                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'))
+                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'))
+                        final_items_for_day.append(item_data)
+
                     if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, newly_parsed_items, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
-                    return newly_parsed_items
+                        self._save_daily_json_cache(channel_source_id, current_date, final_items_for_day, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
+                    return final_items_for_day
 
                 elif cached_data is not None:
                     logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} not modified (304) or semantically identical. Using stale JSON cache.")
@@ -1450,6 +1471,43 @@ class TvsLeanScraper:
                     return []
         return []
 
+    @functools.lru_cache(maxsize=128)
+    def parse_detail_page(self, detail_url: str) -> Dict[str, Any]:
+        """
+        Parses the detail page of a program to extract additional information.
+        This method fetches the HTML content and delegates parsing to the TvsHtmlParser.
+
+        :param detail_url: The URL of the program's detail page.
+        :type detail_url: str
+        :returns: A dictionary containing detailed program information.
+        :rtype: Dict[str, Any]
+        """
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting detail page parsing for {detail_url}.")
+            return {
+                'shortdescription': None, 'longdescription': None, 'genre': None,
+                'original_title': None, 'country': None, 'year': None, 'duration': None,
+                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+                'imdbrating': None, 'keyword': None
+            }
+
+        response_content, _, _, _, _ = self.fetch_url(detail_url, is_detail_page=True)
+
+        if not response_content:
+            logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
+            return {
+                'shortdescription': None, 'longdescription': None, 'genre': None,
+                'original_title': None, 'country': None, 'year': None, 'duration': None,
+                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+                'imdbrating': None, 'keyword': None
+            }
+
+        # Delegate parsing to the TvsHtmlParser
+        return self.html_parser.parse_program_details(response_content)
+
+
     def _proactive_cache_cleanup(self) -> None:
         """
         Proactively removes cache files that are outside the MAX_DAYS_TO_SCRAPE window.
@@ -1462,8 +1520,10 @@ class TvsLeanScraper:
 
         logger.debug(f"Starting proactive cleanup of cache files based on MAX_DAYS_TO_SCRAPE in {self.processed_data_cache_base_dir}...")
 
+        # Calculate the maximum relevant date based on MAX_DAYS_TO_SCRAPE from today
         max_relevant_date = datetime.now().date() + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
 
+        # Calculate the earliest allowed date (yesterday) as per the script's logic
         earliest_allowed_date = datetime.now().date() - timedelta(days=1)
 
         for channel_dir_name in os.listdir(self.processed_data_cache_base_dir):
@@ -1488,6 +1548,8 @@ class TvsLeanScraper:
                             date_str = filename.replace('.json', '')
                             file_date = datetime.strptime(date_str, '%Y%m%d').date()
 
+                            # Determine if the file should be deleted based on its date relative to MAX_DAYS_TO_SCRAPE
+                            # Keep files if their date is within the allowed range (yesterday to MAX_DAYS_TO_SCRAPE in future)
                             is_outside_relevant_range = not (earliest_allowed_date <= file_date <= max_relevant_date)
 
                             if is_outside_relevant_range:
@@ -1617,48 +1679,6 @@ class TvsLeanScraper:
         self._cleanup_empty_cache_dirs()
 
         return all_extracted_items
-
-
-def _convert_unix_to_xmltv_time(unix_timestamp_str: Optional[str]) -> Optional[str]:
-    """
-    Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
-
-    :param unix_timestamp_str: Unix timestamp as a string.
-    :type unix_timestamp_str: Optional[str]
-    :returns: XMLTV formatted time string, or None if conversion fails.
-    :rtype: Optional[str]
-    """
-    if not unix_timestamp_str:
-        return None
-    try:
-        unix_timestamp: int = int(unix_timestamp_str)
-
-        if unix_timestamp < 946684800:
-            logger.warning(f"Unrealistically old Unix timestamp '{unix_timestamp_str}' for XMLTV conversion received. Skipping.")
-            return None
-
-        dt_object: datetime = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
-
-        return dt_object.strftime('%Y%m%d%H%M%S +0000')
-    except (ValueError, TypeError) as e:
-        logger.warning(f"Could not convert Unix timestamp '{unix_timestamp_str}' to XMLTV time: {e}")
-        return None
-
-
-def _process_rating_string(original_rating_string: Optional[str]) -> Optional[str]:
-    """
-    Cleans and formats the rating string.
-
-    :param original_rating_string: The raw rating string.
-    :type original_rating_string: Optional[str]
-    :returns: The cleaned and formatted rating string, or None if input was None.
-    :rtype: Optional[str]
-    """
-    if not original_rating_string:
-        return None
-    parts: List[str] = [p.strip() for p in original_rating_string.split('/')]
-    filtered_parts: List[str] = [part for part in parts if '*' in part]
-    return " / ".join(filtered_parts) if filtered_parts else None
 
 
 def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str) -> None:
@@ -1949,7 +1969,7 @@ Examples:
     date_group.add_argument(
         '--date',
         type=str,
-        help='Specific date to scrape inYYYYMMDD format (e.g., 20250523).\n'
+        help='Specific date to scrape in YYYYMMDD format (e.g., 20250523).\n'
              'If specified, only this date will be scraped and --days will be ignored.\n'
              'If not specified, the current date will be used as the start date and\n'
              '--days will control the number of days scraped.'
