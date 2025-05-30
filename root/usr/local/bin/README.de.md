@@ -8,7 +8,7 @@ Dieser Python-basierte Scraper ist darauf ausgelegt, EPG-Daten (Electronic Progr
 
 * **Zeitbereichs-Scraping:** Unterstützt das Scraping für einen bestimmten Starttermin oder für eine konfigurierbare Anzahl von Tagen ab dem aktuellen Datum.
 
-* **Caching:** Nutzt ein benutzerdefiniertes In-Memory- und dateibasiertes Caching-System, um abgerufene HTML-Inhalte und verarbeitete JSON-Daten zu speichern, was die Anzahl der Live-Anfragen erheblich reduziert und die Scraping-Geschwindigkeit bei wiederholten Läufen erhöht. Unterstützt Cache-Revalidierung und das Löschen des Caches.
+* **Erweitertes Caching:** Nutzt ein benutzerdefiniertes In-Memory- und dateibasiertes Caching-System, um abgerufene HTML-Inhalte und verarbeitete JSON-Daten zu speichern, was die Anzahl der Live-Anfragen erheblich reduziert und die Scraping-Geschwindigkeit bei wiederholten Läufen erhöht. Unterstützt Cache-Revalidierung, proaktive Cache-Bereinigung und das Löschen des Caches.
 
 * **Parallele Verarbeitung:** Verwendet einen Thread-Pool, um die Sendepläne für Kanäle und Tage gleichzeitig abzurufen, was die Gesamt-Scraping-Zeit erheblich verkürzt.
 
@@ -40,17 +40,17 @@ Der Scraper verwendet hauptsächlich `lxml` für effizientes HTML-Parsing und `c
 
 Sie können diese mit pip installieren:
 
-
+```bash
 pip install requests lxml cssselect
-
+```
 
 ### Ausführbar machen
 
 Stellen Sie sicher, dass das Skript ausführbar ist:
 
-
+```bash
 chmod +x tvs-scraper
-
+```
 
 Es wird empfohlen, das Skript in einem Verzeichnis zu platzieren, das in Ihrem `PATH` enthalten ist (z.B. `/usr/local/bin/`), oder den vollständigen Pfad zum Skript zu verwenden.
 
@@ -66,6 +66,9 @@ Beim **ersten Durchlauf** des Scrapers, insbesondere wenn viele Kanäle und Tage
 
 **Cache-Konsistenzprüfung:**
 Standardmäßig verwendet der Scraper eine robuste Cache-Konsistenzprüfung, die auf `Content-Length` und `CRC32`-Hashes von Inhaltsstichproben vom Server basiert. Dies stellt sicher, dass zwischengespeicherte Daten nur verwendet werden, wenn der Remote-Inhalt sich nicht geändert hat. Eine einfachere, auf `ETag`/`Last-Modified` basierende bedingte GET-Anfrage kann mit `--cache-simple` aktiviert werden.
+
+**Proaktive Cache-Bereinigung:**
+Der Scraper führt nun eine proaktive Bereinigung des Caches durch, um veraltete oder nicht mehr relevante Cache-Dateien (z.B. für vergangene Tage oder zu weit in der Zukunft liegende Daten) automatisch zu entfernen. Dies hilft, die Cache-Größe zu verwalten und die Leistung zu optimieren. Standardmäßig werden Cache-Dateien für vergangene Tage gelöscht, dieses Verhalten kann mit `--cache-keep` deaktiviert werden.
 
 **Potenzielle Verlangsamungen durch Cache:**
 In bestimmten Szenarien kann die Nutzung des Caches jedoch auch zu **erheblichen Verlangsamungen** führen. Dies kann passieren, wenn:
@@ -84,9 +87,9 @@ Der Scraper wird über die Kommandozeile mit verschiedenen Argumenten gesteuert.
 
 ### Allgemeine Syntax
 
-
+```bash
 ./tvs-scraper [OPTIONEN]
-
+```
 
 ### Wichtige Optionen
 
@@ -140,29 +143,29 @@ Der Scraper wird über die Kommandozeile mit verschiedenen Argumenten gesteuert.
 
 **Alle Kanäle für heute scrapen und XMLTV ausgeben:**
 
-
+```bash
 ./tvs-scraper --output-format xmltv --output-file tvspielfilm.xml --log-level INFO
-
+```
 
 **Spezifische Kanäle (ARD, ZDF) für die nächsten 3 Tage scrapen und JSON ausgeben, mit detailliertem Logging:**
 
-
+```bash
 ./tvs-scraper --channel-ids "ARD,ZDF" --days 3 --output-format json --output-file my_epg_data.json --verbose
-
+```
 
 **Sendeplan für einen bestimmten Tag für einen Kanal scrapen und Cache leeren:**
 
-
+```bash
 ./tvs-scraper --channel-ids "PRO7" --date 20250601 --cache-clear --output-format xmltv
-
+```
 
 **Scraper in Verbindung mit `run-scraper` und Syslog verwenden:**
 
 Standardmäßig protokolliert das `run-scraper`-Skript seine Ausgaben an Syslog. Um dies zu deaktivieren, verwenden Sie `--disable-syslog`.
 
-
+```bash
 /usr/local/bin/run-scraper --syslog-ident my-epg-script
-
+```
 
 (Beachten Sie, dass `--use-syslog` und `--syslog-ident` für den Python-Scraper selbst sind, während `--disable-syslog` und `--syslog-ident` für das `run-scraper`-Skript sind, wobei das Bash-Skript standardmäßig an Syslog protokolliert.)
 
@@ -171,27 +174,19 @@ Standardmäßig protokolliert das `run-scraper`-Skript seine Ausgaben an Syslog.
 Die Einstellung der `max-workers` hat einen direkten Einfluss auf die Serverlast der Webseite `m.tvspielfilm.de`. Eine verantwortungsvolle Nutzung ist entscheidend, um die Verfügbarkeit der Webseite nicht zu beeinträchtigen und nicht als missbräuchliche Aktivität (z.B. Denial-of-Service-Angriff) interpretiert zu werden.
 
 * **`max-workers`:** Dieser Parameter steuert die Anzahl der gleichzeitigen Anfragen, die Ihr Scraper an den Server sendet.
-
-  * **Niedrige Werte (z.B. 1-5):** Sehr schonend für den Server, aber der Scraping-Vorgang dauert länger.
-
-  * **Hohe Werte (z.B. 10+):** Beschleunigt den Scraping-Vorgang, kann den Server aber stark belasten, insbesondere wenn er nicht für viele gleichzeitige Anfragen ausgelegt ist.
+    * **Niedrige Werte (z.B. 1-5):** Sehr schonend für den Server, aber der Scraping-Vorgang dauert länger.
+    * **Hohe Werte (z.B. 10+):** Beschleunigt den Scraping-Vorgang, kann den Server aber stark belasten, insbesondere wenn er nicht für viele gleichzeitige Anfragen ausgelegt ist.
 
 * **`--min-request-delay`:** Dieser Parameter (Standard: `0.05` Sekunden) ist oft wichtiger als `max-workers` allein. Er definiert eine minimale Verzögerung zwischen den einzelnen HTTP-Anfragen. Eine Verzögerung von 0.5 bis 1.0 Sekunden oder mehr ist entscheidend, um den Server nicht zu überfordern.
 
 **Empfehlung für faires Scraping:**
 
 1.  **Beginnen Sie konservativ:** Starten Sie immer mit einer niedrigen Anzahl von Workern (z.B. 5) und einer angemessenen `min-request-delay` (z.B. 0.5 Sekunden).
-
 2.  **Beobachten Sie das Serververhalten:** Achten Sie auf Fehlermeldungen wie `HTTP Error 429 (Too Many Requests)` oder ungewöhnlich langsame Antwortzeiten. Diese sind Indikatoren für eine Überlastung.
-
 3.  **Anpassen der Parameter:**
-
     * Wenn Sie Fehler wie 429 erhalten, erhöhen Sie die `min-request-delay` oder reduzieren Sie die `max-workers`.
-
     * Wenn der Scraper stabil läuft und keine Probleme auftreten, können Sie die `max-workers` schrittweise erhöhen oder die `min-request-delay` leicht verringern, aber immer mit Vorsicht.
-
 4.  **`robots.txt` beachten:** Obwohl `m.tvspielfilm.de/robots.txt` keine spezifische `Crawl-delay`-Anweisung enthält, gibt sie verbotene Pfade an und schließt bestimmte Bots explizit aus. Halten Sie sich an diese Regeln.
-
 5.  **Caching nutzen:** Der aktivierte Cache reduziert die Anzahl der Live-Anfragen erheblich, was die Serverlast minimiert.
 
 Für `m.tvspielfilm.de`, eine größere Medienseite, ist ein Wert von **5 bis 10 `max-workers` in Kombination mit einer `--min-request-delay` von mindestens 0.5 Sekunden** ein fairer und angemessener Startpunkt. Der Standardwert von `max-workers` ist `10`, was einen guten Ausgangspunkt darstellt.
@@ -206,10 +201,10 @@ Die `channelmap.conf` definiert, welche Kanäle von welchem EPG-Anbieter gescrap
 
 **Beispiel-Eintrag in `channelmap.conf`:**
 
-
+```
 xmltv:ARD.tvs:1 = S19.2E-1-1019-10301 // Das Erste HD
 xmltv:ZDF.tvs:1 = S19.2E-1-1011-11110 // ZDF HD
-
+```
 
 * `xmltv`: Der Quellenname, der vom `run-scraper`-Skript erkannt wird.
 
@@ -223,11 +218,11 @@ Die `epgd.conf` konfiguriert den `epgd`-Daemon selbst, einschließlich des Pfads
 
 **Beispiel-Einträge in `epgd.conf`:**
 
-
+```
 xmltv.input = /epgd/cache/tvs_xmltv.xml
 DaysInAdvance = 7
 UpdateTime = 24
-
+```
 
 * `xmltv.input`: Der Pfad, unter dem der Scraper die XMLTV-Datei ablegt.
 
@@ -249,9 +244,9 @@ Das bereitgestellte `run-scraper`-Skript automatisiert den Aufruf des Python-Scr
 
 * **`EOFError: Ran out of input` oder `sqlite3.InterfaceError: bad parameter or other API misuse`:** Diese Fehler deuten auf einen beschädigten Cache-Eintrag hin. Führen Sie den Scraper mit der Option `--cache-clear` aus, um den Cache zu leeren und die Daten neu abzurufen.
 
-    ```
-    ./tvs-scraper --cache-clear [weitere Optionen]
-    ```
+  ```bash
+  ./tvs-scraper --cache-clear [weitere Optionen]
+  ```
 
 * **Keine Daten extrahiert / Leere Ausgabedatei:**
 
@@ -275,7 +270,7 @@ Der Scraper ist in Python geschrieben und verwendet `requests` für HTTP-Anfrage
 
 * **`TvsLeanScraper` Klasse:** Kapselt die gesamte Scraping-Logik.
 
-* **`fetch_url` Methode:** Verantwortlich für das Abrufen von URLs und die Fehlerbehandlung auf HTTP-Ebene. Sie verwendet jetzt `functools.lru_cache` für das In-Memory-Caching und implementiert einen benutzerdefinierten dateibasierten Caching-Mechanismus mit Inhaltskonsistenzprüfungen.
+* **`fetch_url` Methode:** Verantwortlich für das Abrufen von URLs und die Fehlerbehandlung auf HTTP-Ebene. Sie verwendet jetzt `functools.lru_cache` für das In-Memory-Caching und implementiert einen benutzerdefinierten dateibasierten Caching-Mechanismus mit Inhaltskonsistenzprüfungen, einschließlich `Content-Length` und `Range-Request` CRC32-Hash-Vergleich, sowie optional ETag/Last-Modified.
 
 * **`_get_channel_list` Methode:** Extrahiert die Liste der Kanäle und integriert sich mit dem dateibasierten Cache für Kanallistendaten.
 
@@ -284,6 +279,10 @@ Der Scraper ist in Python geschrieben und verwendet `requests` für HTTP-Anfrage
 * **`parse_detail_page` Methode:** Extrahiert zusätzliche Details von den Programm-Detailseiten und nutzt `functools.lru_cache` für das In-Memory-Caching von Detailseiteninhalten.
 
 * **`_process_channel_day_schedule` Methode:** Eine Hilfsmethode, die den Abruf und das Parsen für einen Tag und Kanal orchestriert, einschließlich der anwendungsspezifischen Retry-Logik und der Interaktion mit dem dateibasierten Cache.
+
+* **`_proactive_cache_cleanup` Methode:** Eine neue Methode zur proaktiven Bereinigung veralteter oder nicht mehr relevanter Cache-Dateien für alle Kanäle und Daten.
+
+* **`_cleanup_empty_cache_dirs` Methode:** Eine neue Methode zum Entfernen leerer Kanal-Unterverzeichnisse im Cache.
 
 * **`generate_xmltv` Funktion:** Erstellt die XMLTV-Ausgabedatei.
 
