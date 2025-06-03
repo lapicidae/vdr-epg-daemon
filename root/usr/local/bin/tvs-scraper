@@ -73,7 +73,7 @@ USER_AGENTS: List[str] = [
     'Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/605.1.15',
 ]
 
 BASE_URL: str = "https://m.tvspielfilm.de"
@@ -184,27 +184,21 @@ class TvsHtmlParser:
         self.selector_title_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('strong.tv-tip-heading span.title')
         self.selector_detail_link_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.image-text-holder a.flex-row.js-track-link')
         self.selector_image_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.program-image div.default-image')
+
+        # Common selectors for detail page sections (infos, cast, crew)
+        self.base_detail_list_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
+        self.selector_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
+        self.selector_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
+        self.selector_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
+        self.selector_headline_p: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
+
+        # Specific selectors for description, genre, and rating sections
         self.selector_description_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.broadcast-detail__description')
         self.selector_short_desc_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
         self.selector_long_desc_paragraphs: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p:not(.headline)')
         self.selector_genre_underline_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.stage-underline.gray span.text-row')
-        self.selector_infos_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_genre_dt_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
         self.selector_genre_tag_general: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre-info span.genre-text')
         self.selector_genre_time_tag_schedule: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.genre span.genre-time')
-        self.selector_infos_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
-        self.selector_infos_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_infos_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
-        self.selector_headline_infos: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_headline_cast: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_headline_crew: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
-        self.selector_cast_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_cast_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
-        self.selector_cast_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_crew_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
-        self.selector_crew_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
-        self.selector_crew_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
-        self.selector_crew_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
         self.selector_content_rating_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.content-rating')
         self.selector_num_rating_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.content-rating__rating-genre__thumb')
         self.selector_txt_rating_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('blockquote.content-rating__rating-genre__conclusion-quote p')
@@ -341,28 +335,15 @@ class TvsHtmlParser:
             extracted_items.append(item_data)
         return extracted_items
 
-    def parse_program_details(self, html_content: str) -> Dict[str, Any]:
+    def _extract_description(self, root: lxml.html.HtmlElement, detail_data: Dict[str, Any]) -> None:
         """
-        Parses the detail page of a program to extract additional information.
+        Extracts short and long descriptions from the HTML root.
 
-        :param html_content: The HTML content of the program detail page.
-        :type html_content: str
-        :returns: A dictionary containing detailed program information.
-        :rtype: Dict[str, Any]
+        :param root: The lxml HTML root element.
+        :type root: lxml.html.HtmlElement
+        :param detail_data: The dictionary to update with extracted data.
+        :type detail_data: Dict[str, Any]
         """
-        detail_data: Dict[str, Any] = {
-            'shortdescription': None, 'longdescription': None, 'genre': None,
-            'original_title': None, 'country': None, 'year': None, 'duration': None,
-            'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-            'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-            'imdbrating': None, 'keyword': None
-        }
-        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
-
-        adsc_sparte_match: Optional[re.Match[str]] = self.re_adsc_sparte_match.search(html_content)
-        if adsc_sparte_match:
-            detail_data['keyword'] = _sanitize_xml_string(adsc_sparte_match.group(1).strip())
-
         description_section: List[lxml.html.HtmlElement] = self.selector_description_section(root)
         if description_section:
             short_desc_tag: List[lxml.html.HtmlElement] = self.selector_short_desc_tag(description_section[0])
@@ -373,6 +354,15 @@ class TvsHtmlParser:
             if long_desc_paragraphs:
                 detail_data['longdescription'] = _sanitize_xml_string("\n".join([p.text_content().strip() for p in long_desc_paragraphs if p.text_content().strip()]))
 
+    def _extract_genre_info(self, root: lxml.html.HtmlElement, detail_data: Dict[str, Any]) -> None:
+        """
+        Extracts genre information from the HTML root.
+
+        :param root: The lxml HTML root element.
+        :type root: lxml.html.HtmlElement
+        :param detail_data: The dictionary to update with extracted data.
+        :type detail_data: Dict[str, Any]
+        """
         genre_underline_tag: List[lxml.html.HtmlElement] = self.selector_genre_underline_tag(root)
         if genre_underline_tag:
             genre_text: str = genre_underline_tag[0].text_content().strip()
@@ -383,11 +373,10 @@ class TvsHtmlParser:
                 detail_data['genre'] = _sanitize_xml_string(genre_text.strip())
 
         if not detail_data['genre']:
-            all_infos_containers: List[lxml.html.HtmlElement] = self.selector_infos_container(root)
-            for infos_container_elem in all_infos_containers:
-                headline_p_elements: List[lxml.html.HtmlElement] = self.selector_headline_infos(infos_container_elem)
+            for infos_container_elem in self.base_detail_list_container(root):
+                headline_p_elements: List[lxml.html.HtmlElement] = self.selector_headline_p(infos_container_elem)
                 if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
-                    for dt_element in self.selector_infos_dt(infos_container_elem):
+                    for dt_element in self.selector_dt(infos_container_elem):
                         if dt_element.text_content().strip() == "Genre":
                             genre_dd: Optional[lxml.html.HtmlElement] = dt_element.getnext()
                             if genre_dd:
@@ -409,14 +398,23 @@ class TvsHtmlParser:
                     else:
                         detail_data['genre'] = _sanitize_xml_string(genre_time_tag_schedule[0].text_content().strip())
 
-        all_infos_containers = self.selector_infos_container(root)
-        for infos_container_elem in all_infos_containers:
-            headline_p_elements = self.selector_headline_infos(infos_container_elem)
+    def _extract_general_info(self, root: lxml.html.HtmlElement, detail_data: Dict[str, Any]) -> None:
+        """
+        Extracts general information (original title, country, year, duration, parental rating)
+        from the HTML root.
+
+        :param root: The lxml HTML root element.
+        :type root: lxml.html.HtmlElement
+        :param detail_data: The dictionary to update with extracted data.
+        :type detail_data: Dict[str, Any]
+        """
+        for infos_container_elem in self.base_detail_list_container(root):
+            headline_p_elements = self.selector_headline_p(infos_container_elem)
             if headline_p_elements and headline_p_elements[0].text_content().strip() == "Infos":
-                infos_dl: List[lxml.html.HtmlElement] = self.selector_infos_dl(infos_container_elem)
+                infos_dl: List[lxml.html.HtmlElement] = self.selector_dl(infos_container_elem)
                 if infos_dl:
-                    dt_elements: List[lxml.html.HtmlElement] = self.selector_infos_dt(infos_dl[0])
-                    dd_elements: List[lxml.html.HtmlElement] = self.selector_infos_dd(infos_dl[0])
+                    dt_elements: List[lxml.html.HtmlElement] = self.selector_dt(infos_dl[0])
+                    dd_elements: List[lxml.html.HtmlElement] = self.selector_dd(infos_dl[0])
                     for dt, dd in zip(dt_elements, dd_elements):
                         dt_text: str = dt.text_content().strip()
                         dd_text: str = dd.text_content().strip()
@@ -442,14 +440,22 @@ class TvsHtmlParser:
                                     pass
                 break
 
-        all_cast_containers: List[lxml.html.HtmlElement] = self.selector_cast_container(root)
-        for cast_container_elem in all_cast_containers:
-            headline_p_elements = self.selector_headline_cast(cast_container_elem)
+    def _extract_cast_info(self, root: lxml.html.HtmlElement, detail_data: Dict[str, Any]) -> None:
+        """
+        Extracts cast information from the HTML root.
+
+        :param root: The lxml HTML root element.
+        :type root: lxml.html.HtmlElement
+        :param detail_data: The dictionary to update with extracted data.
+        :type detail_data: Dict[str, Any]
+        """
+        for cast_container_elem in self.base_detail_list_container(root):
+            headline_p_elements = self.selector_headline_p(cast_container_elem)
             if headline_p_elements and headline_p_elements[0].text_content().strip() == "Cast":
                 cast_list: List[str] = []
-                cast_dl: List[lxml.html.HtmlElement] = self.selector_cast_dl(cast_container_elem)
+                cast_dl: List[lxml.html.HtmlElement] = self.selector_dl(cast_container_elem)
                 if cast_dl:
-                    for dt_tag in self.selector_cast_dt(cast_dl[0]):
+                    for dt_tag in self.selector_dt(cast_dl[0]):
                         role: str = dt_tag.text_content().strip()
                         actor_dd_tag: Optional[lxml.html.HtmlElement] = dt_tag.getnext()
                         if actor_dd_tag is not None:
@@ -459,14 +465,22 @@ class TvsHtmlParser:
                 detail_data['cast'] = ", ".join(cast_list) if cast_list else None
                 break
 
-        all_crew_containers: List[lxml.html.HtmlElement] = self.selector_crew_container(root)
-        for crew_container_elem in all_crew_containers:
-            headline_p_elements = self.selector_headline_crew(crew_container_elem)
+    def _extract_crew_info(self, root: lxml.html.HtmlElement, detail_data: Dict[str, Any]) -> None:
+        """
+        Extracts crew information (director, screenplay, camera) from the HTML root.
+
+        :param root: The lxml HTML root element.
+        :type root: lxml.html.HtmlElement
+        :param detail_data: The dictionary to update with extracted data.
+        :type detail_data: Dict[str, Any]
+        """
+        for crew_container_elem in self.base_detail_list_container(root):
+            headline_p_elements = self.selector_headline_p(crew_container_elem)
             if headline_p_elements and headline_p_elements[0].text_content().strip() == "Crew":
-                crew_dl: List[lxml.html.HtmlElement] = self.selector_crew_dl(crew_container_elem)
+                crew_dl: List[lxml.html.HtmlElement] = self.selector_dl(crew_container_elem)
                 if crew_dl:
-                    dt_elements = self.selector_crew_dt(crew_dl[0])
-                    dd_elements = self.selector_crew_dd(crew_dl[0])
+                    dt_elements = self.selector_dt(crew_dl[0])
+                    dd_elements = self.selector_dd(crew_dl[0])
                     for dt, dd in zip(dt_elements, dd_elements):
                         dt_text: str = dt.text_content().strip()
                         dd_text: str = dd.text_content().strip()
@@ -479,6 +493,15 @@ class TvsHtmlParser:
                             detail_data['camera'] = _sanitize_xml_string(dd_text)
                 break
 
+    def _extract_rating_info(self, root: lxml.html.HtmlElement, detail_data: Dict[str, Any]) -> None:
+        """
+        Extracts rating information (numerical, text, detailed, IMDB) from the HTML root.
+
+        :param root: The lxml HTML root element.
+        :type root: lxml.html.HtmlElement
+        :param detail_data: The dictionary to update with extracted data.
+        :type detail_data: Dict[str, Any]
+        """
         content_rating_section: List[lxml.html.HtmlElement] = self.selector_content_rating_section(root)
         if content_rating_section:
             num_rating_div: List[lxml.html.HtmlElement] = self.selector_num_rating_div(content_rating_section[0])
@@ -513,6 +536,29 @@ class TvsHtmlParser:
             imdb_rating_tag: List[lxml.html.HtmlElement] = self.selector_imdb_rating_tag(content_rating_section[0])
             if imdb_rating_tag:
                 detail_data['imdbrating'] = _sanitize_xml_string(imdb_rating_tag[0].text_content().strip())
+
+    def parse_program_details(self, html_content: str) -> Dict[str, Any]:
+        """
+        Parses the detail page of a program to extract additional information.
+
+        :param html_content: The HTML content of the program detail page.
+        :type html_content: str
+        :returns: A dictionary containing detailed program information.
+        :rtype: Dict[str, Any]
+        """
+        detail_data: Dict[str, Any] = self._DETAIL_DATA_TEMPLATE.copy()
+        root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
+
+        adsc_sparte_match: Optional[re.Match[str]] = self.re_adsc_sparte_match.search(html_content)
+        if adsc_sparte_match:
+            detail_data['keyword'] = _sanitize_xml_string(adsc_sparte_match.group(1).strip())
+
+        self._extract_description(root, detail_data)
+        self._extract_genre_info(root, detail_data)
+        self._extract_general_info(root, detail_data)
+        self._extract_cast_info(root, detail_data)
+        self._extract_crew_info(root, detail_data)
+        self._extract_rating_info(root, detail_data)
 
         return detail_data
 
@@ -1004,23 +1050,20 @@ class TvsLeanScraper:
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
+        # Loop for retries
         for _ in range(2):
             response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
 
-            if response is None:
-                logger.warning(f"Item {item_key} - Image URL check failed for {url}. Falling back to original URL: {original_image_url}")
-                return original_image_url
-
-            if response.status_code == 200:
+            if response is None or response.status_code != 200:
+                logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code if response else 'None'}) for {url}. Retrying...")
+                # Continue the loop for retry
+            else: # Status code is 200
                 final_image_url: str = response.url
                 logger.debug(f"Item {item_key} - Image URL check successful (Status {response.status_code}). Using URL: {final_image_url}")
-                return final_image_url
-            else:
-                logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code}) for {url}. Falling back to original URL: {original_image_url}")
-                return original_image_url
+                return final_image_url # Success, return immediately
 
         logger.error(f"Failed to fetch {url} after retrying.")
-        return original_image_url
+        return original_image_url # All retries failed, return original
 
     def _get_daily_cache_filepath(self, channel_id: str, date: datetime.date) -> str:
         """
