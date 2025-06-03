@@ -524,6 +524,14 @@ class TvsLeanScraper:
     Handles fetching HTML, parsing channel lists and program schedules,
     extracting detailed program information, and managing caching and retries.
     """
+    _DETAIL_DATA_TEMPLATE: Dict[str, Any] = {
+        'shortdescription': None, 'longdescription': None, 'genre': None,
+        'original_title': None, 'country': None, 'year': None, 'duration': None,
+        'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
+        'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
+        'imdbrating': None, 'keyword': None
+    }
+
     def __init__(self, channel_ids: Optional[str] = None, days: Optional[int] = None, img_size: Optional[str] = None, check_img: Optional[bool] = None, start_date_str: Optional[str] = None,
                  cache_dir_path: Optional[str] = None, max_workers: int = DEFAULT_MAX_WORKERS, max_retries: int = DEFAULT_MAX_RETRIES,
                  channel_ids_file: Optional[str] = None, min_request_delay: float = DEFAULT_MIN_REQUEST_DELAY,
@@ -1253,13 +1261,7 @@ class TvsLeanScraper:
                             item_data.update(detail_page_data)
                         else:
                             logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
-                            item_data.update({
-                                'shortdescription': None, 'longdescription': None, 'genre': None,
-                                'original_title': None, 'country': None, 'year': None, 'duration': None,
-                                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-                                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-                                'imdbrating': None, 'keyword': None
-                            })
+                            item_data.update(self._DETAIL_DATA_TEMPLATE.copy())
 
                         item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
                         item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
@@ -1310,25 +1312,13 @@ class TvsLeanScraper:
         """
         if self.stop_event.is_set():
             logger.debug(f"Stop event set. Aborting detail page parsing for {detail_url}.")
-            return {
-                'shortdescription': None, 'longdescription': None, 'genre': None,
-                'original_title': None, 'country': None, 'year': None, 'duration': None,
-                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-                'imdbrating': None, 'keyword': None
-            }
+            return self._DETAIL_DATA_TEMPLATE.copy()
 
         response_content, _, _, _ = self.fetch_url(detail_url, is_detail_page=True)
 
         if not response_content:
             logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
-            return {
-                'shortdescription': None, 'longdescription': None, 'genre': None,
-                'original_title': None, 'country': None, 'year': None, 'duration': None,
-                'parentalrating': None, 'cast': None, 'director': None, 'screenplay': None,
-                'camera': None, 'numrating': None, 'rating': None, 'txtrating': None,
-                'imdbrating': None, 'keyword': None
-            }
+            return self._DETAIL_DATA_TEMPLATE.copy()
 
         return self.html_parser.parse_program_details(response_content)
 
@@ -1793,7 +1783,7 @@ Examples:
     date_group.add_argument(
         '--date',
         type=str,
-        help='Specific date to scrape inYYYYMMDD format (e.g., 20250523). If specified, only this date will be scraped and --days will be ignored. If not specified, the current date will be used as the start date and --days will control the number of days scraped.'
+        help='Specific date to scrape inYYYYMMDD format (e.g., 20250523). If specified, only this date will be scraped and --days will be ignored.'
     )
     date_group.add_argument(
         '--days',
