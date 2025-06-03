@@ -24,10 +24,9 @@ import sys
 import tempfile
 import threading
 import time
-import zlib
 from datetime import datetime, timedelta, timezone
 from requests.adapters import HTTPAdapter
-from typing import List, Dict, Optional, Any, Tuple, Union
+from typing import List, Dict, Optional, Any, Tuple
 from urllib3.util.retry import Retry
 from xml.sax.saxutils import XMLGenerator
 from argparse import RawTextHelpFormatter
@@ -51,11 +50,6 @@ DEFAULT_CACHE_TTL_SECONDS: int = 6 * 60 * 60
 CACHE_PROCESSED_DATA_SUBDIR: str = "processed-data"
 CACHE_CHANNEL_LIST_FILE: str = "channels.json"
 
-CACHE_CONTENT_VALIDATION_MODE: Union[str, bool] = "range_requests"
-
-RANGE_SAMPLE_SIZE: int = 1024
-NUMBER_OF_SAMPLES: int = 3
-
 DEFAULT_MAX_WORKERS: int = 10
 DEFAULT_MAX_RETRIES: int = 5
 RETRY_STATUS_FORCELIST: List[int] = [429, 500, 502, 503, 504]
@@ -66,6 +60,8 @@ DEFAULT_OUTPUT_FORMAT: str = 'xmltv'
 DEFAULT_SYSLOG_TAG: str = 'tvs-scraper'
 DEFAULT_MIN_REQUEST_DELAY: float = 0.05
 DEFAULT_MAX_SCHEDULE_RETRIES: int = 3
+DEFAULT_CACHE_VALIDATION_TOLERANCE: int = 5
+
 
 USER_AGENTS: List[str] = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
@@ -533,8 +529,8 @@ class TvsLeanScraper:
                  channel_ids_file: Optional[str] = None, min_request_delay: float = DEFAULT_MIN_REQUEST_DELAY,
                  max_schedule_retries: int = DEFAULT_MAX_SCHEDULE_RETRIES,
                  disable_cache: bool = DEFAULT_CACHE_DISABLE, cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
-                 use_etag_cache_check: bool = False, keep_past_cache: bool = False,
-                 cache_clear: bool = False, xmltv_timezone: Optional[str] = None):
+                 keep_past_cache: bool = False, cache_clear: bool = False, xmltv_timezone: Optional[str] = None,
+                 cache_validation_tolerance: int = DEFAULT_CACHE_VALIDATION_TOLERANCE):
         """
         Initializes the TvsLeanScraper instance.
 
@@ -564,14 +560,14 @@ class TvsLeanScraper:
         :type disable_cache: bool
         :param cache_ttl: Cache Time To Live in seconds.
         :type cache_ttl: int
-        :param use_etag_cache_check: If True, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency. If False (default), the Content-Length and Range-Request CRC32 comparison method is used.
-        :type use_etag_cache_check: bool
         :param keep_past_cache: If True, prevents automatic deletion of past days' cache files.
         :type keep_past_cache: bool
         :param cache_clear: If True, clears all caches before starting.
         :type cache_clear: bool
         :param xmltv_timezone: Specifies the timezone for XMLTV output.
         :type xmltv_timezone: Optional[str]
+        :param cache_validation_tolerance: Tolerance in bytes for content-length comparison when ETag/Last-Modified fails to return 304.
+        :type cache_validation_tolerance: int
         :raises NotADirectoryError: If the specified cache path exists but is not a directory.
         """
         self.target_sourceids: Optional[set[str]] = None
@@ -678,19 +674,15 @@ class TvsLeanScraper:
         self.enable_cache: bool = not disable_cache
         self.cache_ttl: int = cache_ttl
         self.processed_data_cache_base_dir: str = os.path.join(self.cache_dir, CACHE_PROCESSED_DATA_SUBDIR)
-        self.use_etag_cache_check: bool = use_etag_cache_check
         self.keep_past_cache: bool = bool(keep_past_cache)
         self.cache_clear_requested: bool = cache_clear
-
-        self.cache_content_validation_mode: Union[str, bool] = CACHE_CONTENT_VALIDATION_MODE
+        self.cache_validation_tolerance: int = cache_validation_tolerance
 
         if self.enable_cache:
             os.makedirs(self.processed_data_cache_base_dir, exist_ok=True)
             logger.debug(f"Processed data cache enabled. Path: {self.processed_data_cache_base_dir}, TTL: {self.cache_ttl}s.")
-            if self.use_etag_cache_check:
-                logger.debug("Simple conditional GET (ETag/Last-Modified/304) for cache consistency is ENABLED.")
-            else:
-                logger.debug(f"Advanced cache content validation mode: '{self.cache_content_validation_mode}'.")
+            logger.debug("Conditional GET (ETag/Last-Modified/304) for cache consistency is ENABLED by default.")
+            logger.debug(f"Content-Length tolerance for cache validation set to {self.cache_validation_tolerance} bytes.")
             if self.keep_past_cache:
                 logger.debug("Keeping past days' cache files is ENABLED (--keep-past-cache).")
             else:
@@ -763,13 +755,13 @@ class TvsLeanScraper:
             return None
 
     @functools.lru_cache(maxsize=128)
-    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, cached_sample_hashes: Optional[Tuple[int, ...]] = None, allow_redirects: bool = True, is_detail_page: bool = False) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]]]:
+    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, allow_redirects: bool = True, is_detail_page: bool = False) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
         """
         Sends an HTTP GET request to the given URL using the configured session.
 
         Handles HTTP status codes, timeouts, and retries. Applies a delay only for
         live (non-cached) requests to be polite. Implements Conditional GET using ETag and Last-Modified headers.
-        Also implements Content-Length and Range-Request hash comparison for cache consistency.
+        If a 304 Not Modified is not received, it checks content-length with a tolerance.
 
         :param url: The URL to fetch.
         :type url: str
@@ -779,21 +771,19 @@ class TvsLeanScraper:
         :type last_modified: Optional[str]
         :param cached_content_length: The Content-Length from the last cached response.
         :type cached_content_length: Optional[int]
-        :param cached_sample_hashes: Tuple of CRC32 hashes of content samples from the last cached response.
-        :type cached_sample_hashes: Optional[Tuple[int, ...]]
         :param allow_redirects: Whether to follow HTTP redirects. Defaults to True.
         :type allow_redirects: bool
-        :param is_detail_page: If True, suppresses certain debug messages related to cache misses and skips HEAD request.
+        :param is_detail_page: If True, suppresses certain debug messages related to cache misses.
         :type is_detail_page: bool
-        :returns: A tuple (response_content, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes).
-                  response_content is None if 304 Not Modified or if content is semantically identical.
-                  fetched_content_length and fetched_sample_hashes are for the *newly fetched* content.
-                  Returns (None, None, None, None, None) if request fails.
-        :rtype: Tuple[Optional[str], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]]]
+        :returns: A tuple (response_content, new_etag, new_last_modified, fetched_content_length).
+                  response_content is None if 304 Not Modified or if content is semantically identical within tolerance.
+                  fetched_content_length is for the *newly fetched* content.
+                  Returns (None, None, None, None) if request fails.
+        :rtype: Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]
         """
         if self.stop_event.is_set():
             logger.debug(f"Stop event set. Aborting fetch for {url}.")
-            return None, None, None, None, None
+            return None, None, None, None
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
@@ -801,235 +791,45 @@ class TvsLeanScraper:
             logger.debug(f"Performing full GET for {url} (explicit --cache-clear requested).")
             response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Cache Clear] ")
             if response is None:
-                return None, None, None, None, None
+                return None, None, None, None
 
             new_etag: Optional[str] = response.headers.get('ETag')
             new_last_modified: Optional[str] = response.headers.get('Last-Modified')
             fetched_content_length: int = len(response.content)
-            fetched_sample_hashes_list: List[int] = []
-            if fetched_content_length > 0:
-                sample_ranges = []
-                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-                if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                    middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                    sample_ranges.append((middle_start, middle_end))
-                if fetched_content_length > RANGE_SAMPLE_SIZE:
-                    last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                    sample_ranges.append((last_start, fetched_content_length - 1))
-                sample_ranges = sorted(list(set(sample_ranges)))
-                for start, end in sample_ranges:
-                    sample_content: bytes = response.content[start : end + 1]
-                    fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-            fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
 
-            logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}")
-            return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
+            logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}, Content-Length: {fetched_content_length}")
+            return response.text, new_etag, new_last_modified, fetched_content_length
 
-        if self.use_etag_cache_check:
-            logger.debug(f"Simple conditional GET (ETag/Last-Modified/304) enabled for {url}.")
-            if etag:
-                headers['If-None-Match'] = etag
-            if last_modified:
-                headers['If-Modified-Since'] = last_modified
+        if etag:
+            headers['If-None-Match'] = etag
+        if last_modified:
+            headers['If-Modified-Since'] = last_modified
 
-            response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Conditional GET] ")
+        response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Conditional GET] ")
 
-            if response is None:
-                return None, None, None, None, None
-
-            if response.status_code == 304:
-                logger.debug(f"Resource {url} not modified (304). Using cached data.")
-                return None, etag, last_modified, cached_content_length, cached_sample_hashes
-
-            new_etag: Optional[str] = response.headers.get('ETag')
-            new_last_modified: Optional[str] = response.headers.get('Last-Modified')
-            fetched_content_length: int = len(response.content)
-            fetched_sample_hashes_list: List[int] = []
-
-            if fetched_content_length > 0:
-                sample_ranges = []
-                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-                if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                    middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                    sample_ranges.append((middle_start, middle_end))
-                if fetched_content_length > RANGE_SAMPLE_SIZE:
-                    last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                    sample_ranges.append((last_start, fetched_content_length - 1))
-                sample_ranges = sorted(list(set(sample_ranges)))
-                for start, end in sample_ranges:
-                    sample_content: bytes = response.content[start : end + 1]
-                    fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-            fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
-
-            return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
-
-        perform_content_length_check = (self.cache_content_validation_mode == "full" or self.cache_content_validation_mode == "content_length")
-        perform_range_request_check = (self.cache_content_validation_mode == "full" or self.cache_content_validation_mode == "range_requests")
-
-        if self.cache_content_validation_mode == "none":
-            logger.warning(f"[{threading.current_thread().name}] Advanced cache content validation (content length, range requests) is disabled for {url}. Relying only on TTL.")
-            if cached_content_length is not None and cached_sample_hashes is not None:
-                return None, etag, last_modified, cached_content_length, cached_sample_hashes
-            else:
-                logger.debug(f"No cache info available for {url} even with 'none' validation mode. Forcing full GET.")
-                response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[No Cache Info/None Validation] ")
-                if response is None:
-                    return None, None, None, None, None
-
-                new_etag = response.headers.get('ETag', etag)
-                new_last_modified = response.headers.get('Last-Modified', last_modified)
-                fetched_content_length = len(response.content)
-                fetched_sample_hashes_list = []
-                if fetched_content_length > 0:
-                    sample_ranges = []
-                    sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-                    if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                        middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                        middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                        sample_ranges.append((middle_start, middle_end))
-                    if fetched_content_length > RANGE_SAMPLE_SIZE:
-                        last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                        sample_ranges.append((last_start, fetched_content_length - 1))
-                    sample_ranges = sorted(list(set(sample_ranges)))
-                    for start, end in sample_ranges:
-                        sample_content: bytes = response.content[start : end + 1]
-                        fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-                fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
-                return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
-
-
-        current_content_length: int = 0
-        new_etag: Optional[str] = etag
-        new_last_modified: Optional[str] = last_modified
-
-        head_failed_reason: Optional[str] = None
-
-        if perform_content_length_check and not is_detail_page:
-            head_response = self._make_request('head', url, headers, allow_redirects, 10, log_prefix="[HEAD Request] ")
-            if head_response:
-                current_content_length = int(head_response.headers.get('Content-Length', 0))
-                new_etag = head_response.headers.get('ETag', etag)
-                new_last_modified = head_response.headers.get('Last-Modified', last_modified)
-                logger.debug(f"HEAD request for {url}: Content-Length={current_content_length}, ETag={new_etag}, Last-Modified={new_last_modified}")
-            else:
-                head_failed_reason = "HEAD request failed"
-                logger.debug(f"HEAD request failed for {url}. Will attempt full GET.")
-                current_content_length = 0
-        elif is_detail_page and perform_content_length_check:
-            current_content_length = 0
-            logger.debug(f"HEAD request skipped for detail page: {url}. Forcing full GET to get content length.")
-
-        content_length_mismatch: bool = False
-        samples_differ: bool = False
-        cache_info_missing: bool = False
-
-        if not self.enable_cache:
-            cache_info_missing = True
-            logger.debug(f"Cache disabled for {url}. Forcing full GET.")
-        elif cached_content_length is None or (perform_range_request_check and cached_sample_hashes is None):
-            cache_info_missing = True
-            if not is_detail_page:
-                logger.debug(f"No cache info (length or samples) available for {url}. Forcing full GET.")
-        elif perform_content_length_check and current_content_length == 0 and head_failed_reason:
-            content_length_mismatch = True
-            logger.debug(f"HEAD request failed for {url} ({head_failed_reason}). Forcing full GET.")
-        elif perform_content_length_check and current_content_length != cached_content_length:
-            content_length_mismatch = True
-            logger.debug(f"Content-Length for {url} differs (cached: {cached_content_length}, current: {current_content_length}). Forcing full GET.")
-        elif perform_range_request_check and cached_content_length is not None and current_content_length > 0 and cached_sample_hashes:
-            logger.debug(f"Content-Length for {url} matches cached. Performing range requests.")
-
-            sample_ranges: List[Tuple[int, int]] = []
-            effective_content_length_for_samples = current_content_length if current_content_length > 0 else cached_content_length
-            if effective_content_length_for_samples > 0:
-                sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, effective_content_length_for_samples - 1)))
-
-                if effective_content_length_for_samples > RANGE_SAMPLE_SIZE * 2:
-                    middle_start = (effective_content_length_for_samples // 2) - (RANGE_SAMPLE_SIZE // 2)
-                    middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                    sample_ranges.append((middle_start, middle_end))
-
-                if effective_content_length_for_samples > RANGE_SAMPLE_SIZE:
-                    last_start = effective_content_length_for_samples - RANGE_SAMPLE_SIZE
-                    sample_ranges.append((last_start, effective_content_length_for_samples - 1))
-
-                sample_ranges = sorted(list(set(sample_ranges)))
-
-            current_sample_hashes: List[int] = []
-
-            for i, (start, end) in enumerate(sample_ranges):
-                if self.stop_event.is_set():
-                    logger.debug(f"Stop event set. Aborting range request for {url}.")
-                    return None, None, None, None, None
-                range_header: str = f"bytes={start}-{end}"
-                range_headers: Dict[str, str] = {**headers, 'Range': range_header}
-
-                range_response = self._make_request('get', url, range_headers, allow_redirects, 10, log_prefix=f"[Range Request {i}] ")
-                if range_response:
-                    current_hash: int = zlib.crc32(range_response.content)
-                    current_sample_hashes.append(current_hash)
-
-                    if i < len(cached_sample_hashes) and current_hash != cached_sample_hashes[i]:
-                        samples_differ = True
-                        logger.debug(f"Sample {i} for {url} differs. Forcing full GET.")
-                        break
-                else:
-                    samples_differ = True
-                    logger.debug(f"Range request for {url} ({range_header}) failed. Forcing full GET.")
-                    break
-        elif perform_range_request_check and (cached_sample_hashes is None or not cached_sample_hashes):
-            logger.debug(f"Range request check enabled for {url} but no samples available. Forcing full GET.")
-            samples_differ = True
-
-        reason_for_full_get = []
-        if content_length_mismatch:
-            reason_for_full_get.append(f"Content-Length mismatch (cached: {cached_content_length}, current: {current_content_length})")
-        if samples_differ:
-            reason_for_full_get.append("Content samples differ")
-        if cache_info_missing and not is_detail_page:
-            reason_for_full_get.append("Missing cache info or cache disabled")
-        if head_failed_reason:
-            reason_for_full_get.append(f"HEAD request failed: {head_failed_reason}")
-
-        if reason_for_full_get or (is_detail_page and (perform_content_length_check or perform_range_request_check)):
-            logger.debug(f"Performing full GET for {url} ({'; '.join(reason_for_full_get)}).")
-
-        response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Full GET Fallback] ")
         if response is None:
-            return None, None, None, None, None
+            return None, None, None, None
+
+        new_etag: Optional[str] = response.headers.get('ETag')
+        new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+        fetched_content_length: int = len(response.content)
 
         if response.status_code == 304:
-            logger.debug(f"Resource {url} not modified (304) during full GET fallback.")
-            return None, etag, last_modified, cached_content_length, cached_sample_hashes
+            logger.debug(f"Resource {url} not modified (304). Using cached data.")
+            return None, etag, last_modified, cached_content_length
 
-        new_etag = response.headers.get('ETag', etag)
-        new_last_modified = response.headers.get('Last-Modified', last_modified)
-
-        fetched_content_length = len(response.content)
-        fetched_sample_hashes_list = []
-
-        if perform_range_request_check and fetched_content_length > 0:
-            sample_ranges = []
-            sample_ranges.append((0, min(RANGE_SAMPLE_SIZE - 1, fetched_content_length - 1)))
-            if fetched_content_length > RANGE_SAMPLE_SIZE * 2:
-                middle_start = (fetched_content_length // 2) - (RANGE_SAMPLE_SIZE // 2)
-                middle_end = middle_start + RANGE_SAMPLE_SIZE - 1
-                sample_ranges.append((middle_start, middle_end))
-            if fetched_content_length > RANGE_SAMPLE_SIZE:
-                last_start = fetched_content_length - RANGE_SAMPLE_SIZE
-                sample_ranges.append((last_start, fetched_content_length - 1))
-
-            sample_ranges = sorted(list(set(sample_ranges)))
-
-            for start, end in sample_ranges:
-                sample_content: bytes = response.content[start : end + 1]
-                fetched_sample_hashes_list.append(zlib.crc32(sample_content))
-        fetched_sample_hashes_tuple = tuple(fetched_sample_hashes_list)
-
-        logger.debug(f"Full content fetched for {url} (Status: {response.status_code}). Content-Length: {fetched_content_length}")
-        return response.text, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes_tuple
+        if cached_content_length is not None and \
+           abs(fetched_content_length - cached_content_length) <= self.cache_validation_tolerance:
+            logger.debug(f"Resource {url} content length is within tolerance ({self.cache_validation_tolerance} bytes). "
+                         f"Fetched: {fetched_content_length}, Cached: {cached_content_length}. Using cached data.")
+            return None, new_etag, new_last_modified, fetched_content_length
+        else:
+            if cached_content_length is not None:
+                logger.debug(f"Resource {url} content length differs beyond tolerance. "
+                             f"Fetched: {fetched_content_length}, Cached: {cached_content_length}, Tolerance: {self.cache_validation_tolerance}. Fetching new content.")
+            else:
+                logger.debug(f"No cached content length for {url} or conditional GET failed. Fetching new content.")
+            return response.text, new_etag, new_last_modified, fetched_content_length
 
 
     def _get_cache_channel_list_filepath(self) -> str:
@@ -1041,22 +841,22 @@ class TvsLeanScraper:
         """
         return os.path.join(self.processed_data_cache_base_dir, CACHE_CHANNEL_LIST_FILE)
 
-    def _load_channel_list_cache(self) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]:
+    def _load_channel_list_cache(self) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], bool]:
         """
-        Loads cached channel list data along with ETag, Last-Modified, Content-Length, and Sample Hashes.
+        Loads cached channel list data along with ETag, Last-Modified, and Content-Length.
         Checks if the data is fresh based on its internal timestamp and TTL.
 
-        :returns: A tuple containing cached data, ETag, Last-Modified header, content length, sample hashes, and freshness status.
-        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]
+        :returns: A tuple containing cached data, ETag, Last-Modified header, content length, and freshness status.
+        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], bool]
         """
         if self.stop_event.is_set():
             logger.debug("Stop event set. Aborting cache load for channel list.")
-            return None, None, None, None, None, False
+            return None, None, None, None, False
 
         filepath: str = self._get_cache_channel_list_filepath()
         if not os.path.exists(filepath):
             logger.debug(f"Channel list cache file not found at {filepath}.")
-            return None, None, None, None, None, False
+            return None, None, None, None, False
 
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -1067,8 +867,6 @@ class TvsLeanScraper:
             last_modified: Optional[str] = cache_content.get('last_modified')
             cached_at_str: Optional[str] = cache_content.get('cached_at')
             content_length: Optional[int] = cache_content.get('content_length')
-            sample_hashes_list: Optional[List[int]] = cache_content.get('sample_hashes')
-            sample_hashes_tuple: Optional[Tuple[int, ...]] = tuple(sample_hashes_list) if sample_hashes_list is not None else None
 
             is_fresh: bool = False
             if cached_at_str:
@@ -1082,25 +880,25 @@ class TvsLeanScraper:
             else:
                 logger.debug("Channel list JSON cache is stale. Will attempt conditional fetch.")
 
-            return data, etag, last_modified, content_length, sample_hashes_tuple, is_fresh
+            return data, etag, last_modified, content_length, is_fresh
 
         except json.JSONDecodeError as e:
             logger.warning(f"Error decoding channel list JSON cache: {e}. Deleting corrupted file and re-scraping: {filepath}")
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return None, None, None, None, None, False
+            return None, None, None, None, False
         except IOError as e:
             logger.warning(f"IOError loading channel list JSON cache: {e}. Deleting file and re-scraping: {filepath}")
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return None, None, None, None, None, False
+            return None, None, None, None, False
         except Exception as e:
             logger.error(f"Unexpected error in _load_channel_list_cache: {e}")
-            return None, None, None, None, None, False
+            return None, None, None, None, False
 
-    def _save_channel_list_cache(self, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, sample_hashes: Optional[Tuple[int, ...]] = None) -> None:
+    def _save_channel_list_cache(self, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None) -> None:
         """
-        Saves channel list data to the JSON cache, including HTTP ETag, Last-Modified, Content-Length, and Sample Hashes headers.
+        Saves channel list data to the JSON cache, including HTTP ETag, Last-Modified, and Content-Length headers.
 
         :param data: The channel list data to save.
         :type data: List[Dict[str, Any]]
@@ -1110,8 +908,6 @@ class TvsLeanScraper:
         :type last_modified: Optional[str]
         :param content_length: The Content-Length of the fetched content.
         :type content_length: Optional[int]
-        :param sample_hashes: Tuple of CRC32 hashes of content samples.
-        :type sample_hashes: Optional[Tuple[int, ...]]
         """
         if self.stop_event.is_set():
             logger.debug("Stop event set. Aborting cache save for channel list.")
@@ -1125,7 +921,6 @@ class TvsLeanScraper:
                 'last_modified': last_modified,
                 'cached_at': datetime.now(timezone.utc).isoformat(),
                 'content_length': content_length,
-                'sample_hashes': list(sample_hashes) if sample_hashes is not None else None
             }
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(cache_content, f, ensure_ascii=False, indent=4)
@@ -1146,7 +941,7 @@ class TvsLeanScraper:
 
         channels_url: str = f"{BASE_URL}/sender/"
 
-        cached_channel_list, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, is_cache_fresh = (
+        cached_channel_list, cached_etag, cached_last_modified, cached_content_length, is_cache_fresh = (
             self._load_channel_list_cache()
         )
 
@@ -1156,12 +951,11 @@ class TvsLeanScraper:
 
         logger.info(f"Channel list JSON cache is stale or disabled. Attempting conditional fetch from {channels_url}...")
 
-        response_content, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes = self.fetch_url(
+        response_content, new_etag, new_last_modified, fetched_content_length = self.fetch_url(
             channels_url,
             etag=cached_etag,
             last_modified=cached_last_modified,
             cached_content_length=cached_content_length,
-            cached_sample_hashes=cached_sample_hashes,
             is_detail_page=False
         )
 
@@ -1170,14 +964,14 @@ class TvsLeanScraper:
             channel_data = self.html_parser.parse_channel_list(response_content)
 
             if self.enable_cache:
-                self._save_channel_list_cache(channel_data, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
+                self._save_channel_list_cache(channel_data, new_etag, new_last_modified, fetched_content_length)
 
             logger.info(f"Found {len(channel_data)} channels.")
             return channel_data
         elif cached_channel_list is not None:
             logger.info("HTML content for channel list not modified (304) or semantically identical. Using stale JSON cache.")
             if self.enable_cache:
-                self._save_channel_list_cache(cached_channel_list, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes)
+                self._save_channel_list_cache(cached_channel_list, cached_etag, cached_last_modified, cached_content_length)
             return cached_channel_list
         else:
             logger.error("Failed to fetch channel list content and no cached data available.")
@@ -1235,10 +1029,10 @@ class TvsLeanScraper:
         os.makedirs(channel_dir, exist_ok=True)
         return os.path.join(channel_dir, f"{date.strftime('%Y%m%d')}.json")
 
-    def _load_daily_json_cache(self, channel_id: str, date: datetime.date) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], Optional[str], bool]:
+    def _load_daily_json_cache(self, channel_id: str, date: datetime.date) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[str], bool]:
         """
         Loads processed JSON data from the daily data cache, along with ETag, Last-Modified, Content-Length,
-        Sample Hashes, and the timezone it was cached with.
+        and the timezone it was cached with.
         Checks if the data is fresh based on its internal timestamp and TTL.
         Also deletes cache files for past days (if --keep-past-cache is not set) and for dates
         beyond MAX_DAYS_TO_SCRAPE from the current date.
@@ -1247,19 +1041,19 @@ class TvsLeanScraper:
         :type channel_id: str
         :param date: The date of the schedule.
         :type date: datetime.date
-        :returns: A tuple (data, etag, last_modified, content_length, sample_hashes, cached_xmltv_timezone, is_fresh).
+        :returns: A tuple (data, etag, last_modified, content_length, cached_xmltv_timezone, is_fresh).
                   data is None if file not found or corrupted.
                   is_fresh is True if the data is within TTL.
-        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], Optional[str], bool]
+        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[str], bool]
         """
         if self.stop_event.is_set():
             logger.debug(f"Stop event set. Aborting cache load for {channel_id} on {date.strftime('%Y-%m-%d')}.")
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
 
         filepath: str = self._get_daily_cache_filepath(channel_id, date)
         if not os.path.exists(filepath):
             logger.debug(f"Daily JSON cache file not found for {channel_id} on {date.strftime('%Y-%m-%d')} at {filepath}.")
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
 
         if not self.keep_past_cache and date < (datetime.now().date() - timedelta(days=1)):
             logger.debug(f"Deleting stale cache file for past day {date.strftime('%Y-%m-%d')} for channel {channel_id} as --keep-past-cache is not set.")
@@ -1267,7 +1061,7 @@ class TvsLeanScraper:
                 os.remove(filepath)
             except OSError as e:
                 logger.error(f"Error deleting cache file {filepath}: {e}")
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
 
         max_relevant_date = datetime.now().date() + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
         if date > max_relevant_date:
@@ -1276,7 +1070,7 @@ class TvsLeanScraper:
                 os.remove(filepath)
             except OSError as e:
                 logger.error(f"Error deleting cache file {filepath}: {e}")
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
 
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -1287,8 +1081,6 @@ class TvsLeanScraper:
             last_modified: Optional[str] = cache_content.get('last_modified')
             cached_at_str: Optional[str] = cache_content.get('cached_at')
             content_length: Optional[int] = cache_content.get('content_length')
-            sample_hashes_list: Optional[List[int]] = cache_content.get('sample_hashes')
-            sample_hashes_tuple: Optional[Tuple[int, ...]] = tuple(sample_hashes_list) if sample_hashes_list is not None else None
             cached_xmltv_timezone: Optional[str] = cache_content.get('xmltv_timezone')
 
             is_fresh: bool = False
@@ -1304,26 +1096,26 @@ class TvsLeanScraper:
             else:
                 logger.debug(f"Daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')} is stale. Will attempt conditional fetch.")
 
-            return data, etag, last_modified, content_length, sample_hashes_tuple, cached_xmltv_timezone, is_fresh
+            return data, etag, last_modified, content_length, cached_xmltv_timezone, is_fresh
 
         except json.JSONDecodeError as e:
             logger.warning(f"Error decoding daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting corrupted file and re-scraping: {filepath}")
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
         except IOError as e:
             logger.warning(f"IOError loading daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting file and re-scraping: {filepath}")
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
         except Exception as e:
             logger.error(f"Unexpected error in _load_daily_json_cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
-            return None, None, None, None, None, None, False
+            return None, None, None, None, None, False
 
-    def _save_daily_json_cache(self, channel_id: str, date: datetime.date, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, sample_hashes: Optional[Tuple[int, ...]] = None, xmltv_timezone_used: Optional[str] = None) -> None:
+    def _save_daily_json_cache(self, channel_id: str, date: datetime.date, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, xmltv_timezone_used: Optional[str] = None) -> None:
         """
-        Saves processed JSON data to the daily data cache, including HTTP ETag, Last-Modified, Content-Length,
-        Sample Hashes headers, and the timezone used for XMLTV time formatting.
+        Saves processed JSON data to the daily data cache, including HTTP ETag, Last-Modified,
+        Content-Length headers, and the timezone used for XMLTV time formatting.
 
         :param channel_id: The ID of the channel.
         :type channel_id: str
@@ -1337,8 +1129,6 @@ class TvsLeanScraper:
         :type last_modified: Optional[str]
         :param content_length: The Content-Length of the fetched content.
         :type content_length: Optional[int]
-        :param sample_hashes: Tuple of CRC32 hashes of content samples.
-        :type sample_hashes: Optional[Tuple[int, ...]]
         :param xmltv_timezone_used: The timezone string used when generating 'starttime_xmltv' and 'endtime_xmltv'.
         :type xmltv_timezone_used: Optional[str]
         """
@@ -1354,7 +1144,6 @@ class TvsLeanScraper:
                 'last_modified': last_modified,
                 'cached_at': datetime.now(timezone.utc).isoformat(),
                 'content_length': content_length,
-                'sample_hashes': list(sample_hashes) if sample_hashes is not None else None,
                 'xmltv_timezone': xmltv_timezone_used
             }
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -1390,7 +1179,7 @@ class TvsLeanScraper:
         programs_for_day: List[Dict[str, Any]] = []
 
         if self.enable_cache and not self.cache_clear_requested:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, cached_xmltv_timezone, is_cache_fresh = (
+            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
                 self._load_daily_json_cache(channel_source_id, current_date)
             )
 
@@ -1406,11 +1195,11 @@ class TvsLeanScraper:
                         item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
                         item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
                         reprocessed_programs.append(item_data)
-                    self._save_daily_json_cache(channel_source_id, current_date, reprocessed_programs, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, self.xmltv_timezone)
+                    self._save_daily_json_cache(channel_source_id, current_date, reprocessed_programs, cached_etag, cached_last_modified, cached_content_length, self.xmltv_timezone)
                     return reprocessed_programs
         else:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, cached_xmltv_timezone, is_cache_fresh = (
-                None, None, None, None, None, None, False
+            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
+                None, None, None, None, None, False
             )
             if self.cache_clear_requested:
                 logger.debug(f"Cache clear requested. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
@@ -1428,12 +1217,11 @@ class TvsLeanScraper:
 
                 logger.debug(f"Attempting to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
 
-                response_content, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes = self.fetch_url(
+                response_content, new_etag, new_last_modified, fetched_content_length = self.fetch_url(
                     schedule_url,
                     etag=cached_etag,
                     last_modified=cached_last_modified,
                     cached_content_length=cached_content_length,
-                    cached_sample_hashes=cached_sample_hashes,
                     is_detail_page=False
                 )
 
@@ -1479,7 +1267,7 @@ class TvsLeanScraper:
                         final_items_for_day.append(item_data)
 
                     if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, final_items_for_day, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes, self.xmltv_timezone)
+                        self._save_daily_json_cache(channel_source_id, current_date, final_items_for_day, new_etag, new_last_modified, fetched_content_length, self.xmltv_timezone)
                     return final_items_for_day
 
                 elif cached_data is not None:
@@ -1491,7 +1279,7 @@ class TvsLeanScraper:
                         reprocessed_cached_data.append(item_data)
 
                     if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, reprocessed_cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, self.xmltv_timezone)
+                        self._save_daily_json_cache(channel_source_id, current_date, reprocessed_cached_data, cached_etag, cached_last_modified, cached_content_length, self.xmltv_timezone)
                     return reprocessed_cached_data
                 else:
                     logger.warning(f"Could not retrieve or parse program for {channel_name} on {current_date.strftime('%Y-%m-%d')}. No cached data available.")
@@ -1530,7 +1318,7 @@ class TvsLeanScraper:
                 'imdbrating': None, 'keyword': None
             }
 
-        response_content, _, _, _, _ = self.fetch_url(detail_url, is_detail_page=True)
+        response_content, _, _, _ = self.fetch_url(detail_url, is_detail_page=True)
 
         if not response_content:
             logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
@@ -2102,10 +1890,10 @@ Examples:
         help=f'Cache Time To Live in seconds. This defines how long a processed JSON file is considered "fresh" and used directly without re-scraping HTML. Default: {DEFAULT_CACHE_TTL_SECONDS // 3600} hours.'
     )
     caching_group.add_argument(
-        '--cache-simple',
-        action='store_true',
-        dest='use_etag_cache_check',
-        help='If set, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency. By default, the Content-Length and Range-Request CRC32 comparison method is used.'
+        '--cache-validation-tolerance',
+        type=int,
+        default=DEFAULT_CACHE_VALIDATION_TOLERANCE,
+        help=f'Tolerance in bytes for content-length comparison when ETag/Last-Modified fails to return 304. Default: {DEFAULT_CACHE_VALIDATION_TOLERANCE} bytes.'
     )
     caching_group.add_argument(
         '--cache-keep',
@@ -2203,10 +1991,10 @@ Examples:
         max_schedule_retries=args.max_schedule_retries,
         disable_cache=args.disable_cache,
         cache_ttl=args.cache_ttl,
-        use_etag_cache_check=args.use_etag_cache_check,
         keep_past_cache=args.keep_past_cache,
         cache_clear=args.clear_cache,
-        xmltv_timezone=args.xmltv_timezone
+        xmltv_timezone=args.xmltv_timezone,
+        cache_validation_tolerance=args.cache_validation_tolerance
     )
 
     if args.list_channels:
