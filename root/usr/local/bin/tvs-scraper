@@ -30,6 +30,13 @@ from requests.adapters import HTTPAdapter
 from typing import List, Dict, Optional, Any, Tuple, Union
 from urllib3.util.retry import Retry
 from xml.sax.saxutils import XMLGenerator
+from argparse import RawTextHelpFormatter
+
+if sys.version_info < (3, 9):
+    print("Error: This script requires Python 3.9 or higher for the 'zoneinfo' module.")
+    print("Please update your Python version or use an earlier version of the script that uses 'pytz'.")
+    sys.exit(1)
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +104,14 @@ def _sanitize_xml_string(text: Optional[str]) -> Optional[str]:
     return _INVALID_XML_CHARS_PATTERN.sub('', text)
 
 
-def _convert_unix_to_xmltv_time(unix_timestamp_str: Optional[str]) -> Optional[str]:
+def _convert_unix_to_xmltv_time(unix_timestamp_str: Optional[str], target_timezone_str: str = 'UTC') -> Optional[str]:
     """
     Converts a Unix timestamp string (in seconds) to XMLTV time format (YYYYMMDDhhmmss +ZZZZ).
 
     :param unix_timestamp_str: Unix timestamp as a string.
     :type unix_timestamp_str: Optional[str]
+    :param target_timezone_str: The target timezone string (e.g., 'Europe/Berlin').
+    :type target_timezone_str: str
     :returns: XMLTV formatted time string, or None if conversion fails.
     :rtype: Optional[str]
     """
@@ -115,9 +124,23 @@ def _convert_unix_to_xmltv_time(unix_timestamp_str: Optional[str]) -> Optional[s
             logger.warning(f"Unrealistically old Unix timestamp '{unix_timestamp_str}' for XMLTV conversion received. Skipping.")
             return None
 
-        dt_object: datetime = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+        dt_object_utc: datetime = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
 
-        return dt_object.strftime('%Y%m%d%H%M%S +0000')
+        try:
+            target_tz = ZoneInfo(target_timezone_str)
+        except Exception as e:
+            logger.error(f"Unknown timezone '{target_timezone_str}'. Falling back to UTC. Error: {e}")
+            target_tz = timezone.utc
+
+        dt_object_local: datetime = dt_object_utc.astimezone(target_tz)
+
+        offset_seconds = dt_object_local.utcoffset().total_seconds()
+        offset_hours = int(offset_seconds // 3600)
+        offset_minutes = int((abs(offset_seconds) % 3600) // 60)
+        offset_sign = '+' if offset_hours >= 0 else '-'
+        offset_str = f"{offset_sign}{abs(offset_hours):02d}{abs(offset_minutes):02d}"
+
+        return dt_object_local.strftime(f'%Y%m%d%H%M%S {offset_str}')
     except (ValueError, TypeError) as e:
         logger.warning(f"Could not convert Unix timestamp '{unix_timestamp_str}' to XMLTV time: {e}")
         return None
@@ -150,15 +173,15 @@ class TvsHtmlParser:
         Initializes the TvsHtmlParser with all necessary CSS selectors
         and regular expressions for parsing.
         """
-        self.re_source_id_html = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
-        self.re_image_url_match = re.compile(r"url\(['\"]?(.*?)['\"]?\)")
-        self.re_image_base_path_match = re.compile(r'(.*?)_(\d+)\.jpg$')
-        self.re_log_item_id_cleanup = re.compile(r'[^a-zA-Z0-9]')
-        self.re_genre_pipe_match = re.compile(r'\|\s*(.*)')
-        self.re_duration_minutes_match = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
-        self.re_fsk_match = re.compile(r'(\d+)')
-        self.re_rating_class_match = re.compile(r'rating-(\d+)')
-        self.re_adsc_sparte_match = re.compile(r'"adsc_sparte":"([^"]+)"')
+        self.re_source_id_html: re.Pattern = re.compile(r',([a-zA-Z0-9_-]+)\.html$')
+        self.re_image_url_match: re.Pattern = re.compile(r"url\(['\"]?(.*?)['\"]?\)")
+        self.re_image_base_path_match: re.Pattern = re.compile(r'(.*?)_(\d+)\.jpg$')
+        self.re_log_item_id_cleanup: re.Pattern = re.compile(r'[^a-zA-Z0-9]')
+        self.re_genre_pipe_match: re.Pattern = re.compile(r'\|\s*(.*)')
+        self.re_duration_minutes_match: re.Pattern = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
+        self.re_fsk_match: re.Pattern = re.compile(r'(\d+)')
+        self.re_rating_class_match: re.Pattern = re.compile(r'rating-(\d+)')
+        self.re_adsc_sparte_match: re.Pattern = re.compile(r'"adsc_sparte":"([^"]+)"')
 
         self.selector_sender_links: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
         self.selector_li_elements: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
@@ -511,7 +534,7 @@ class TvsLeanScraper:
                  max_schedule_retries: int = DEFAULT_MAX_SCHEDULE_RETRIES,
                  disable_cache: bool = DEFAULT_CACHE_DISABLE, cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
                  use_etag_cache_check: bool = False, keep_past_cache: bool = False,
-                 cache_clear: bool = False):
+                 cache_clear: bool = False, xmltv_timezone: Optional[str] = None):
         """
         Initializes the TvsLeanScraper instance.
 
@@ -523,7 +546,7 @@ class TvsLeanScraper:
         :type img_size: Optional[str]
         :param check_img: Boolean to enable/disable image URL validity checks.
         :type check_img: Optional[bool]
-        :param start_date_str: Specific date to scrape in YYYYMMDD format.
+        :param start_date_str: Specific date to scrape inYYYYMMDD format.
         :type start_date_str: Optional[str]
         :param cache_dir_path: Custom directory for cache files.
         :type cache_dir_path: Optional[str]
@@ -547,6 +570,8 @@ class TvsLeanScraper:
         :type keep_past_cache: bool
         :param cache_clear: If True, clears all caches before starting.
         :type cache_clear: bool
+        :param xmltv_timezone: Specifies the timezone for XMLTV output.
+        :type xmltv_timezone: Optional[str]
         :raises NotADirectoryError: If the specified cache path exists but is not a directory.
         """
         self.target_sourceids: Optional[set[str]] = None
@@ -678,6 +703,7 @@ class TvsLeanScraper:
 
         self.stop_event = threading.Event()
         self.html_parser = TvsHtmlParser()
+        self.xmltv_timezone: str = xmltv_timezone if xmltv_timezone else 'Europe/Berlin'
 
     def _build_schedule_url(self, channel_url: str, current_date: datetime.date) -> str:
         """
@@ -1140,7 +1166,7 @@ class TvsLeanScraper:
         )
 
         if response_content is not None:
-            logger.info("HTML content for channel list was modified or fetched for the first time. Parsing new data.")
+            logger.info("HTML content for channel list was modified or fetched for the first first time. Parsing new data.")
             channel_data = self.html_parser.parse_channel_list(response_content)
 
             if self.enable_cache:
@@ -1209,9 +1235,10 @@ class TvsLeanScraper:
         os.makedirs(channel_dir, exist_ok=True)
         return os.path.join(channel_dir, f"{date.strftime('%Y%m%d')}.json")
 
-    def _load_daily_json_cache(self, channel_id: str, date: datetime.date) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]:
+    def _load_daily_json_cache(self, channel_id: str, date: datetime.date) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], Optional[str], bool]:
         """
-        Loads processed JSON data from the daily data cache, along with ETag, Last-Modified, Content-Length, and Sample Hashes.
+        Loads processed JSON data from the daily data cache, along with ETag, Last-Modified, Content-Length,
+        Sample Hashes, and the timezone it was cached with.
         Checks if the data is fresh based on its internal timestamp and TTL.
         Also deletes cache files for past days (if --keep-past-cache is not set) and for dates
         beyond MAX_DAYS_TO_SCRAPE from the current date.
@@ -1220,19 +1247,19 @@ class TvsLeanScraper:
         :type channel_id: str
         :param date: The date of the schedule.
         :type date: datetime.date
-        :returns: A tuple (data, etag, last_modified, content_length, sample_hashes, is_fresh).
+        :returns: A tuple (data, etag, last_modified, content_length, sample_hashes, cached_xmltv_timezone, is_fresh).
                   data is None if file not found or corrupted.
                   is_fresh is True if the data is within TTL.
-        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], bool]
+        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[Tuple[int, ...]], Optional[str], bool]
         """
         if self.stop_event.is_set():
             logger.debug(f"Stop event set. Aborting cache load for {channel_id} on {date.strftime('%Y-%m-%d')}.")
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
 
         filepath: str = self._get_daily_cache_filepath(channel_id, date)
         if not os.path.exists(filepath):
             logger.debug(f"Daily JSON cache file not found for {channel_id} on {date.strftime('%Y-%m-%d')} at {filepath}.")
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
 
         if not self.keep_past_cache and date < (datetime.now().date() - timedelta(days=1)):
             logger.debug(f"Deleting stale cache file for past day {date.strftime('%Y-%m-%d')} for channel {channel_id} as --keep-past-cache is not set.")
@@ -1240,7 +1267,7 @@ class TvsLeanScraper:
                 os.remove(filepath)
             except OSError as e:
                 logger.error(f"Error deleting cache file {filepath}: {e}")
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
 
         max_relevant_date = datetime.now().date() + timedelta(days=MAX_DAYS_TO_SCRAPE - 1)
         if date > max_relevant_date:
@@ -1249,7 +1276,7 @@ class TvsLeanScraper:
                 os.remove(filepath)
             except OSError as e:
                 logger.error(f"Error deleting cache file {filepath}: {e}")
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
 
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -1262,6 +1289,7 @@ class TvsLeanScraper:
             content_length: Optional[int] = cache_content.get('content_length')
             sample_hashes_list: Optional[List[int]] = cache_content.get('sample_hashes')
             sample_hashes_tuple: Optional[Tuple[int, ...]] = tuple(sample_hashes_list) if sample_hashes_list is not None else None
+            cached_xmltv_timezone: Optional[str] = cache_content.get('xmltv_timezone')
 
             is_fresh: bool = False
             if cached_at_str:
@@ -1276,25 +1304,26 @@ class TvsLeanScraper:
             else:
                 logger.debug(f"Daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')} is stale. Will attempt conditional fetch.")
 
-            return data, etag, last_modified, content_length, sample_hashes_tuple, is_fresh
+            return data, etag, last_modified, content_length, sample_hashes_tuple, cached_xmltv_timezone, is_fresh
 
         except json.JSONDecodeError as e:
             logger.warning(f"Error decoding daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting corrupted file and re-scraping: {filepath}")
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
         except IOError as e:
             logger.warning(f"IOError loading daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting file and re-scraping: {filepath}")
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
         except Exception as e:
             logger.error(f"Unexpected error in _load_daily_json_cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
-            return None, None, None, None, None, False
+            return None, None, None, None, None, None, False
 
-    def _save_daily_json_cache(self, channel_id: str, date: datetime.date, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, sample_hashes: Optional[Tuple[int, ...]] = None) -> None:
+    def _save_daily_json_cache(self, channel_id: str, date: datetime.date, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, sample_hashes: Optional[Tuple[int, ...]] = None, xmltv_timezone_used: Optional[str] = None) -> None:
         """
-        Saves processed JSON data to the daily data cache, including HTTP ETag, Last-Modified, Content-Length, and Sample Hashes headers.
+        Saves processed JSON data to the daily data cache, including HTTP ETag, Last-Modified, Content-Length,
+        Sample Hashes headers, and the timezone used for XMLTV time formatting.
 
         :param channel_id: The ID of the channel.
         :type channel_id: str
@@ -1310,6 +1339,8 @@ class TvsLeanScraper:
         :type content_length: Optional[int]
         :param sample_hashes: Tuple of CRC32 hashes of content samples.
         :type sample_hashes: Optional[Tuple[int, ...]]
+        :param xmltv_timezone_used: The timezone string used when generating 'starttime_xmltv' and 'endtime_xmltv'.
+        :type xmltv_timezone_used: Optional[str]
         """
         if self.stop_event.is_set():
             logger.debug(f"Stop event set. Aborting cache save for {channel_id} on {date.strftime('%Y-%m-%d')}.")
@@ -1323,7 +1354,8 @@ class TvsLeanScraper:
                 'last_modified': last_modified,
                 'cached_at': datetime.now(timezone.utc).isoformat(),
                 'content_length': content_length,
-                'sample_hashes': list(sample_hashes) if sample_hashes is not None else None
+                'sample_hashes': list(sample_hashes) if sample_hashes is not None else None,
+                'xmltv_timezone': xmltv_timezone_used
             }
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(cache_content, f, ensure_ascii=False, indent=4)
@@ -1333,11 +1365,12 @@ class TvsLeanScraper:
 
     def _process_channel_day_schedule(self, channel_info: Dict[str, str], current_date: datetime.date) -> List[Dict[str, Any]]:
         """
-        Helper method to fetch and parse a day's schedule for a channel, with retry logic for
+        Fetches and parses a day's schedule for a channel, with retry logic for
         application-level exceptions during schedule parsing.
 
         It prioritizes fresh data from the local JSON cache. If stale or missing,
-        it performs a conditional HTTP GET to check for updates.
+        it performs a conditional HTTP GET to check for updates. If cached data's
+        timezone differs from requested, it reprocesses timestamps.
 
         :param channel_info: Dictionary containing channel information ('name', 'url', 'source_id').
         :type channel_info: Dict[str, str]
@@ -1357,17 +1390,27 @@ class TvsLeanScraper:
         programs_for_day: List[Dict[str, Any]] = []
 
         if self.enable_cache and not self.cache_clear_requested:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, is_cache_fresh = (
+            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, cached_xmltv_timezone, is_cache_fresh = (
                 self._load_daily_json_cache(channel_source_id, current_date)
             )
 
             if is_cache_fresh and cached_data is not None:
-                programs_for_day = cached_data
-                logger.debug(f"Using fresh data from JSON cache for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
-                return programs_for_day
+                if cached_xmltv_timezone == self.xmltv_timezone:
+                    programs_for_day = cached_data
+                    logger.debug(f"Using fresh data from JSON cache for {channel_name} on {current_date.strftime('%Y-%m-%d')} (timezone matches).")
+                    return programs_for_day
+                else:
+                    logger.info(f"Cached data for {channel_name} on {current_date.strftime('%Y-%m-%d')} is fresh but timezone differs (cached: {cached_xmltv_timezone}, requested: {self.xmltv_timezone}). Reprocessing timestamps.")
+                    reprocessed_programs: List[Dict[str, Any]] = []
+                    for item_data in cached_data:
+                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
+                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
+                        reprocessed_programs.append(item_data)
+                    self._save_daily_json_cache(channel_source_id, current_date, reprocessed_programs, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, self.xmltv_timezone)
+                    return reprocessed_programs
         else:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, is_cache_fresh = (
-                None, None, None, None, None, False
+            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, cached_xmltv_timezone, is_cache_fresh = (
+                None, None, None, None, None, None, False
             )
             if self.cache_clear_requested:
                 logger.debug(f"Cache clear requested. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
@@ -1431,19 +1474,25 @@ class TvsLeanScraper:
                             })
 
                         item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
-                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'))
-                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'))
+                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
+                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
                         final_items_for_day.append(item_data)
 
                     if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, final_items_for_day, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes)
+                        self._save_daily_json_cache(channel_source_id, current_date, final_items_for_day, new_etag, new_last_modified, fetched_content_length, fetched_sample_hashes, self.xmltv_timezone)
                     return final_items_for_day
 
                 elif cached_data is not None:
                     logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} not modified (304) or semantically identical. Using stale JSON cache.")
+                    reprocessed_cached_data: List[Dict[str, Any]] = []
+                    for item_data in cached_data:
+                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
+                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
+                        reprocessed_cached_data.append(item_data)
+
                     if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes)
-                    return cached_data
+                        self._save_daily_json_cache(channel_source_id, current_date, reprocessed_cached_data, cached_etag, cached_last_modified, cached_content_length, cached_sample_hashes, self.xmltv_timezone)
+                    return reprocessed_cached_data
                 else:
                     logger.warning(f"Could not retrieve or parse program for {channel_name} on {current_date.strftime('%Y-%m-%d')}. No cached data available.")
                     return []
@@ -1499,6 +1548,7 @@ class TvsLeanScraper:
     def _proactive_cache_cleanup(self) -> None:
         """
         Proactively removes cache files that are outside the MAX_DAYS_TO_SCRAPE window.
+
         This ensures that directories become truly empty if all their files are irrelevant.
         The TTL, last_modified, and cached_at timestamps are ignored for this cleanup.
         """
@@ -1659,7 +1709,7 @@ class TvsLeanScraper:
         return all_extracted_items
 
 
-def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str) -> None:
+def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_timezone: str = 'Europe/Berlin') -> None:
     """
     Generates an XMLTV-compliant XML file from the scraped data
     using xml.sax.saxutils.XMLGenerator for streaming output.
@@ -1671,6 +1721,8 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str) -> None:
     :type data_list: List[Dict[str, Any]]
     :param output_file: The path to the output XMLTV file.
     :type output_file: str
+    :param xmltv_timezone: The timezone string to use for XMLTV header and program times.
+    :type xmltv_timezone: str
     """
     logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator.")
 
@@ -1694,8 +1746,17 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str) -> None:
         output_stream.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
         output_stream.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
 
+        try:
+            target_tz = ZoneInfo(xmltv_timezone)
+        except Exception as e:
+            logger.error(f"Unknown timezone '{xmltv_timezone}' for XMLTV header. Falling back to UTC. Error: {e}")
+            target_tz = timezone.utc
+
+        now_in_target_tz = datetime.now(timezone.utc).astimezone(target_tz)
+        tv_date_str = now_in_target_tz.strftime('%Y%m%d%H%M%S %z').replace(' ', '')
+
         handler.startElement('tv', {
-            'date': datetime.now().strftime('%Y%m%d%H%M%S %z').replace(' ', ''),
+            'date': tv_date_str,
             'source-info-name': _sanitize_xml_string('TVSpielfilm.de') or '',
             'source-info-url': _sanitize_xml_string('https://m.tvspielfilm.de/') or '',
             'generator-info-name': _sanitize_xml_string('TVSpielfilm-Scraper/1.0') or ''
@@ -1891,10 +1952,6 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str) -> None:
 
 
 if __name__ == '__main__':
-    import sys
-    import logging.handlers
-    from argparse import RawTextHelpFormatter
-
     DEFAULT_OUTPUT_FILE: str = 'tvspielfilm'
 
     parser = argparse.ArgumentParser(
@@ -1921,6 +1978,9 @@ Examples:
 
   Clear the entire cache before scraping:
     python3 tvs-scraper.py --cache-clear
+
+  Scrape program for today and output XMLTV with Europe/Berlin timezone:
+    python3 tvs-scraper.py --xmltv-timezone Europe/Berlin
 """
     )
 
@@ -1933,31 +1993,25 @@ Examples:
     channel_group.add_argument(
         '--channel-ids',
         type=str,
-        help='Comma-separated list of channel IDs (e.g., "ARD,ZDF").\n'
-             'If not specified, all channels will be scraped.'
+        help='Comma-separated list of channel IDs (e.g., "ARD,ZDF"). If not specified, all channels will be scraped.'
     )
     channel_group.add_argument(
         '--channel-ids-file',
         type=str,
-        help='Path to a file containing a comma-separated list of channel IDs.\n'
-             'If specified, this option takes precedence over --channel-ids.'
+        help='Path to a file containing a comma-separated list of channel IDs. If specified, this option takes precedence over --channel-ids.'
     )
 
     date_group = parser.add_argument_group('Date and Time Range')
     date_group.add_argument(
         '--date',
         type=str,
-        help='Specific date to scrape in YYYYMMDD format (e.g., 20250523).\n'
-             'If specified, only this date will be scraped and --days will be ignored.\n'
-             'If not specified, the current date will be used as the start date and\n'
-             '--days will control the number of days scraped.'
+        help='Specific date to scrape inYYYYMMDD format (e.g., 20250523). If specified, only this date will be scraped and --days will be ignored. If not specified, the current date will be used as the start date and --days will control the number of days scraped.'
     )
     date_group.add_argument(
         '--days',
         type=int,
         default=DEFAULT_DAYS,
-        help=f'Number of days to scrape (1-{MAX_DAYS_TO_SCRAPE}).\n'
-             f'Default: {DEFAULT_DAYS} (means today only). Ignored if --date is specified.'
+        help=f'Number of days to scrape (1-{MAX_DAYS_TO_SCRAPE}). Default: {DEFAULT_DAYS} (means today only). Ignored if --date is specified.'
     )
 
     output_group = parser.add_argument_group('Output Configuration')
@@ -1965,35 +2019,33 @@ Examples:
         '--output-file',
         type=str,
         default=DEFAULT_OUTPUT_FILE,
-        help='Path to the output file.\n'
-             'If the default filename is used, the file extension will be\n'
-             'automatically appended based on --output-format (e.g., .json for "json",\n'
-             ' .xml for "xmltv"). If a custom filename is provided,\n'
-             'it will be used exactly as specified.\n'
-             f'Default: "{DEFAULT_OUTPUT_FILE}".'
+        help='Path to the output file. If the default filename is used, the file extension will be automatically appended based on --output-format (e.g., .json for "json", .xml for "xmltv"). If a custom filename is provided, it will be used exactly as specified. Default: "{DEFAULT_OUTPUT_FILE}".'
     )
     output_group.add_argument(
         '--output-format',
         type=str,
         default=DEFAULT_OUTPUT_FORMAT,
         choices=['xmltv', 'json'],
-        help=f'Output format: "xmltv", "json" (JSON array).\n'
-             f'Default: {DEFAULT_OUTPUT_FORMAT}.'
+        help=f'Output format: "xmltv", "json" (JSON array). Default: {DEFAULT_OUTPUT_FORMAT}.'
     )
     output_group.add_argument(
         '--img-size',
         type=str,
         choices=['300', '600'],
         default=DEFAULT_IMG_SIZE,
-        help=f'Image size to extract ("300" or "600").\n'
-             f'Default: {DEFAULT_IMG_SIZE}.'
+        help=f'Image size to extract ("300" or "600"). Default: {DEFAULT_IMG_SIZE}.'
     )
     output_group.add_argument(
         '--img-check',
         action='store_true',
         dest='check_img',
-        help='If set, an additional HEAD request will be performed to check the validity\n'
-             'of image URLs. Increases scraping time.'
+        help='If set, an additional HEAD request will be performed to check the validity of image URLs. Increases scraping time.'
+    )
+    output_group.add_argument(
+        '--xmltv-timezone',
+        type=str,
+        default='Europe/Berlin',
+        help='Specifies the timezone to use for XMLTV output (e.g., "Europe/Berlin", "America/New_York"). This affects the timestamps in the XMLTV file. Default: "Europe/Berlin".'
     )
 
     logging_group = parser.add_argument_group('Logging')
@@ -2002,8 +2054,7 @@ Examples:
         type=str,
         default='WARNING',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        help='Sets the logging level. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL.\n'
-             'Default: WARNING.'
+        help='Sets the logging level. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL. Default: WARNING.'
     )
     logging_group.add_argument(
         '--log-verbose',
@@ -2022,86 +2073,71 @@ Examples:
         type=str,
         default=DEFAULT_SYSLOG_TAG,
         dest='syslog_tag',
-        help=f'Identifier (tag) for Syslog messages.\n'
-             f'Default: "{DEFAULT_SYSLOG_TAG}".'
+        help=f'Identifier (tag) for Syslog messages. Default: "{DEFAULT_SYSLOG_TAG}".'
     )
 
     caching_group = parser.add_argument_group('Caching')
     caching_group.add_argument(
         '--cache-dir',
         type=str,
-        help=f'Specifies a custom directory for cache files.\n'
-             f'Default is a subdirectory "{DEFAULT_CACHE_SUBDIR}" in the system temporary directory.'
+        help=f'Specifies a custom directory for cache files. Default is a subdirectory "{DEFAULT_CACHE_SUBDIR}" in the system temporary directory.'
     )
     caching_group.add_argument(
         '--cache-clear',
         action='store_true',
         dest='clear_cache',
-        help='Clears the entire cache directory (including processed data cache)\n'
-             'before scraping begins.'
+        help='Clears the entire cache directory (including processed data cache) before scraping begins.'
     )
     caching_group.add_argument(
         '--cache-disable',
         action='store_true',
         default=DEFAULT_CACHE_DISABLE,
         dest='disable_cache',
-        help='Disables caching of processed JSON data to disk.\n'
-             'Default: False (cache is enabled).'
+        help='Disables caching of processed JSON data to disk. Default: False (cache is enabled).'
     )
     caching_group.add_argument(
         '--cache-ttl',
         type=int,
         default=DEFAULT_CACHE_TTL_SECONDS,
-        help=f'Cache Time To Live in seconds. This defines how long a processed\n'
-             f'JSON file is considered "fresh" and used directly without re-scraping HTML.\n'
-             f'Default: {DEFAULT_CACHE_TTL_SECONDS // 3600} hours.'
+        help=f'Cache Time To Live in seconds. This defines how long a processed JSON file is considered "fresh" and used directly without re-scraping HTML. Default: {DEFAULT_CACHE_TTL_SECONDS // 3600} hours.'
     )
     caching_group.add_argument(
         '--cache-simple',
         action='store_true',
         dest='use_etag_cache_check',
-        help='If set, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency.\n'
-             'By default, the Content-Length and Range-Request CRC32 comparison method is used.'
+        help='If set, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency. By default, the Content-Length and Range-Request CRC32 comparison method is used.'
     )
     caching_group.add_argument(
         '--cache-keep',
         action='store_true',
         dest='keep_past_cache',
-        help='If set, cache files for past days will NOT be automatically deleted.\n'
-             'By default, past days\' cache files are deleted.'
+        help='If set, cache files for past days will NOT be automatically deleted. By default, past days\' cache files are deleted.'
     )
 
     performance_group = parser.add_argument_group('Performance')
     performance_group.add_argument(
         '--max-workers',
         type=int,
-        default=DEFAULT_MAX_WORKERS,
-        help=f'Maximum number of concurrent workers for data fetching.\n'
-             f'Default: {DEFAULT_MAX_WORKERS}.'
+        default=os.cpu_count() * 5,
+        help=f'Maximum number of concurrent workers for data fetching. Default: {os.cpu_count() * 5}.'
     )
     performance_group.add_argument(
         '--max-retries',
         type=int,
         default=DEFAULT_MAX_RETRIES,
-        help=f'Maximum number of retries for failed HTTP requests\n'
-             f'(e.g., 429, 5xx, connection errors).\n'
-             f'Default: {DEFAULT_MAX_RETRIES}.'
+        help=f'Maximum number of retries for failed HTTP requests (e.g., 429, 5xx, connection errors). Default: {DEFAULT_MAX_RETRIES}.'
     )
     performance_group.add_argument(
         '--min-request-delay',
         type=float,
         default=DEFAULT_MIN_REQUEST_DELAY,
-        help=f'Minimum delay in seconds between HTTP requests.\n'
-             f'Applies only to live fetches.\n'
-             f'Default: {DEFAULT_MIN_REQUEST_DELAY}s.'
+        help=f'Minimum delay in seconds between HTTP requests. Applies only to live fetches. Default: {DEFAULT_MIN_REQUEST_DELAY}s.'
     )
     performance_group.add_argument(
         '--max-schedule-retries',
         type=int,
         default=DEFAULT_MAX_SCHEDULE_RETRIES,
-        help=f'Maximum number of retries for application-level errors\n'
-             f'during schedule parsing/generation.\n'
-             f'Default: {DEFAULT_MAX_SCHEDULE_RETRIES}.'
+        help=f'Maximum number of retries for application-level errors during schedule parsing/generation. Default: {DEFAULT_MAX_SCHEDULE_RETRIES}.'
     )
 
     args = parser.parse_args()
@@ -2169,7 +2205,8 @@ Examples:
         cache_ttl=args.cache_ttl,
         use_etag_cache_check=args.use_etag_cache_check,
         keep_past_cache=args.keep_past_cache,
-        cache_clear=args.clear_cache
+        cache_clear=args.clear_cache,
+        xmltv_timezone=args.xmltv_timezone
     )
 
     if args.list_channels:
@@ -2215,7 +2252,7 @@ Examples:
         if output_filename == default_output_file_arg and not output_filename.endswith('.xml'):
             output_filename = f"{output_filename}.xml"
 
-        generate_xmltv(extracted_data, output_filename)
+        generate_xmltv(extracted_data, output_filename, scraper.xmltv_timezone)
 
     else:
         logger.warning("No data extracted or invalid output format specified. Output file will not be created.")
