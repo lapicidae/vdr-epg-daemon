@@ -30,10 +30,11 @@ from typing import List, Dict, Optional, Any, Tuple
 from urllib3.util.retry import Retry
 from xml.sax.saxutils import XMLGenerator
 from argparse import RawTextHelpFormatter
+from urllib.parse import urlparse, parse_qs
 
 if sys.version_info < (3, 9):
     print("Error: This script requires Python 3.9 or higher for the 'zoneinfo' module.")
-    print("Please update your Python version or use an earlier version of the script that uses 'pytz'.")
+    print("Please update your Python version.")
     sys.exit(1)
 from zoneinfo import ZoneInfo
 
@@ -185,14 +186,12 @@ class TvsHtmlParser:
         self.selector_detail_link_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.image-text-holder a.flex-row.js-track-link')
         self.selector_image_div: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.program-image div.default-image')
 
-        # Common selectors for detail page sections (infos, cast, crew)
         self.base_detail_list_container: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.detail-tab__container-content[data-detail-tab-index="1"] div.list-container div.definition-list')
         self.selector_dl: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dl')
         self.selector_dt: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dt')
         self.selector_dd: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('dd')
         self.selector_headline_p: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
 
-        # Specific selectors for description, genre, and rating sections
         self.selector_description_section: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('section.broadcast-detail__description')
         self.selector_short_desc_tag: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p.headline')
         self.selector_long_desc_paragraphs: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('p:not(.headline)')
@@ -252,12 +251,11 @@ class TvsHtmlParser:
                 logger.warning(f"Could not extract source_id or name for channel: {name} (Href: {href}). Skipping.")
         return channel_data
 
-    def parse_daily_schedule_items(self, html_content: str, channel_info: Dict[str, str], current_date: datetime.date, img_size: str) -> List[Dict[str, Any]]:
+    def parse_daily_schedule_items(self, html_content: str, channel_info: Dict[str, str], current_date: datetime.date) -> List[Dict[str, Any]]:
         """
         Parses the schedule for a single channel and a specific date from the HTML content.
 
-        This method extracts basic program information and detail links/image paths,
-        but does not fetch detail pages or check image URLs.
+        This method extracts basic program information and detail links/image paths.
 
         :param html_content: The HTML content of the schedule page.
         :type html_content: str
@@ -265,10 +263,8 @@ class TvsHtmlParser:
         :type channel_info: Dict[str, str]
         :param current_date: The date for which the schedule is being parsed.
         :type current_date: datetime.date
-        :param img_size: The desired image size ("300" or "600").
-        :type img_size: str
         :returns: A list of dictionaries, each representing a program item,
-                  with basic information and links/image paths for further processing.
+                  with basic information and full image URLs.
         :rtype: List[Dict[str, Any]]
         """
         channel_name: str = channel_info['name']
@@ -314,22 +310,12 @@ class TvsHtmlParser:
                 if style_attr:
                     image_url_match: Optional[re.Match[str]] = self.re_image_url_match.search(style_attr)
                     if image_url_match:
-                        original_full_image_url: str = image_url_match.group(1)
-                        base_image_url_match: Optional[re.Match[str]] = self.re_image_base_path_match.match(original_full_image_url)
-                        if base_image_url_match:
-                            item_data['image_base_path'] = base_image_url_match.group(1)
-                        else:
-                            item_data['image_base_path'] = None
-
-                        item_data['image_url'] = f"{item_data['image_base_path']}_{img_size}.jpg" if item_data['image_base_path'] else original_full_image_url
+                        item_data['image_url'] = image_url_match.group(1)
                     else:
-                        item_data['image_base_path'] = None
                         item_data['image_url'] = None
                 else:
-                    item_data['image_base_path'] = None
                     item_data['image_url'] = None
             else:
-                item_data['image_base_path'] = None
                 item_data['image_url'] = None
 
             extracted_items.append(item_data)
@@ -540,6 +526,7 @@ class TvsHtmlParser:
     def parse_program_details(self, html_content: str, detail_data_template: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parses the detail page of a program to extract additional information.
+        This method fetches the HTML content and delegates parsing to the TvsHtmlParser.
 
         :param html_content: The HTML content of the program detail page.
         :type html_content: str
@@ -586,7 +573,7 @@ class TvsLeanScraper:
                  max_schedule_retries: int = DEFAULT_MAX_SCHEDULE_RETRIES,
                  disable_cache: bool = DEFAULT_CACHE_DISABLE, cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
                  keep_past_cache: bool = False, cache_clear: bool = False, xmltv_timezone: Optional[str] = None,
-                 cache_validation_tolerance: int = DEFAULT_CACHE_VALIDATION_TOLERANCE):
+                 cache_validation_tolerance: int = DEFAULT_CACHE_VALIDATION_TOLERANCE, img_crop_disable: bool = False):
         """
         Initializes the TvsLeanScraper instance.
 
@@ -594,7 +581,7 @@ class TvsLeanScraper:
         :type channel_ids: Optional[str]
         :param days: Number of days to scrape.
         :type days: Optional[int]
-        :param img_size: Desired image size ("300" or "600").
+        :param img_size: Desired image size ("150", "300" or "600").
         :type img_size: Optional[str]
         :param check_img: Boolean to enable/disable image URL validity checks.
         :type check_img: Optional[bool]
@@ -624,6 +611,8 @@ class TvsLeanScraper:
         :type xmltv_timezone: Optional[str]
         :param cache_validation_tolerance: Tolerance in bytes for content-length comparison when ETag/Last-Modified fails to return 304.
         :type cache_validation_tolerance: int
+        :param img_crop_disable: If True, disables default image cropping.
+        :type img_crop_disable: bool
         :raises NotADirectoryError: If the specified cache path exists but is not a directory.
         """
         self.target_sourceids: Optional[set[str]] = None
@@ -682,7 +671,7 @@ class TvsLeanScraper:
             logger.warning(f"DAYS value {self.days_to_scrape} exceeds maximum allowed ({MAX_DAYS_TO_SCRAPE}). Setting to {MAX_DAYS_TO_SCRAPE} days.")
             self.days_to_scrape = MAX_DAYS_TO_SCRAPE
 
-        self.img_size: str = img_size if img_size in ["300", "600"] else DEFAULT_IMG_SIZE
+        self.img_size: str = img_size if img_size in ["150", "300", "600"] else DEFAULT_IMG_SIZE
         self.check_img: bool = bool(check_img) if check_img is not None else DEFAULT_IMG_CHECK
         if self.check_img:
             logger.debug("Image URL validity checks (--img-check) are ENABLED. This may increase scraping time.")
@@ -733,6 +722,7 @@ class TvsLeanScraper:
         self.keep_past_cache: bool = bool(keep_past_cache)
         self.cache_clear_requested: bool = cache_clear
         self.cache_validation_tolerance: int = cache_validation_tolerance
+        self.img_crop_disable: bool = img_crop_disable
 
         if self.enable_cache:
             os.makedirs(self.processed_data_cache_base_dir, exist_ok=True)
@@ -1052,20 +1042,18 @@ class TvsLeanScraper:
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
-        # Loop for retries
-        for _ in range(2): # Changed from 2 to 3 for more robust retries
+        for _ in range(2):
             response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
 
             if response is None or response.status_code != 200:
                 logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code if response else 'None'}) for {url}. Retrying...")
-                # Continue the loop for retry
-            else: # Status code is 200
+            else:
                 final_image_url: str = response.url
                 logger.debug(f"Item {item_key} - Image URL check successful (Status {response.status_code}). Using URL: {final_image_url}")
-                return final_image_url # Success, return immediately
+                return final_image_url
 
         logger.error(f"Failed to fetch {url} after retrying.")
-        return original_image_url # All retries failed, return original
+        return original_image_url
 
     def _get_daily_cache_filepath(self, channel_id: str, date: datetime.date) -> str:
         """
@@ -1205,6 +1193,29 @@ class TvsLeanScraper:
         except IOError as e:
             logger.error(f"Error saving daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}.")
 
+    def _strip_im_parameter_for_cache(self, url: str) -> str:
+        """
+        Strips the 'im' parameter from a URL for saving to JSON cache.
+        This function always removes the 'im' parameter.
+
+        :param url: The original URL.
+        :type url: str
+        :returns: The URL with 'im' parameter removed.
+        :rtype: str
+        """
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+
+        if 'im' in query_params:
+            new_query_parts = []
+            for key, values in query_params.items():
+                if key != 'im':
+                    for value in values:
+                        new_query_parts.append(f"{key}={value}")
+            new_query_string = '&'.join(new_query_parts)
+            return parsed._replace(query=new_query_string).geturl()
+        return url
+
     def _process_channel_day_schedule(self, channel_info: Dict[str, str], current_date: datetime.date) -> List[Dict[str, Any]]:
         """
         Fetches and parses a day's schedule for a channel, with retry logic for
@@ -1247,6 +1258,8 @@ class TvsLeanScraper:
                     for item_data in cached_data:
                         item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
                         item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
+                        if item_data.get('image_url'):
+                            item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
                         reprocessed_programs.append(item_data)
                     self._save_daily_json_cache(channel_source_id, current_date, reprocessed_programs, cached_etag, cached_last_modified, cached_content_length, self.xmltv_timezone)
                     return reprocessed_programs
@@ -1283,8 +1296,7 @@ class TvsLeanScraper:
                     basic_parsed_items: List[Dict[str, Any]] = self.html_parser.parse_daily_schedule_items(
                         response_content,
                         channel_info,
-                        current_date,
-                        self.img_size
+                        current_date
                     )
                     if self.stop_event.is_set():
                         return []
@@ -1301,8 +1313,10 @@ class TvsLeanScraper:
                             logger.debug(f"Item {item_id_for_log}: Image URL check scheduled for: {item_data['image_url']}")
                             item_data['image_url'] = self._check_image_url_head(item_data['image_url'], orig_img, item_id_for_log)
 
+                        if item_data.get('image_url'):
+                            item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
+
                         if item_data.get('link'):
-                            # Pass the template to the HTML parser's method
                             detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
                             item_data.update(detail_page_data)
                         else:
@@ -1324,6 +1338,8 @@ class TvsLeanScraper:
                     for item_data in cached_data:
                         item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
                         item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
+                        if item_data.get('image_url'):
+                            item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
                         reprocessed_cached_data.append(item_data)
 
                     if self.enable_cache:
@@ -1366,7 +1382,6 @@ class TvsLeanScraper:
             logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
             return self._DETAIL_DATA_TEMPLATE.copy()
 
-        # Pass the template to the HTML parser's method
         return self.html_parser.parse_program_details(response_content, self._DETAIL_DATA_TEMPLATE)
 
 
@@ -1488,9 +1503,6 @@ class TvsLeanScraper:
 
         total_channels: int = len(channel_list_to_scrape)
 
-        for channel in channel_list_to_scrape:
-            logger.info(f"Scheduling tasks for channel: {channel['name']} (ID: {channel['source_id']}).")
-
         all_extracted_items: List[Dict[str, Any]] = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -1533,8 +1545,62 @@ class TvsLeanScraper:
 
         return all_extracted_items
 
+def _build_image_url_with_params(original_url: str, target_width: int, img_crop_disable: bool) -> str:
+    """
+    Constructs an image URL with specified resize and optional crop parameters for XMLTV output.
 
-def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_timezone: str = 'Europe/Berlin') -> None:
+    If img_crop_disable is False, a default 16:9 crop (800x450) is added, replacing any existing crop.
+    If img_crop_disable is True, any existing crop instructions are removed.
+    The 'Resize,width={target_width}' parameter is always added or updated.
+
+    :param original_url: The original image URL.
+    :type original_url: str
+    :param target_width: The desired width for resizing.
+    :type target_width: int
+    :param img_crop_disable: If True, disables default image cropping and removes any existing crop.
+    :type img_crop_disable: bool
+    :returns: The modified image URL.
+    :rtype: str
+    """
+    parsed_url = urlparse(original_url)
+    raw_query_string = parsed_url.query
+
+    im_instructions_unencoded = []
+    other_query_parts = []
+
+    if raw_query_string:
+        for part in raw_query_string.split('&'):
+            if part.startswith('im='):
+                im_value = parse_qs(part, keep_blank_values=True).get('im', [''])[0]
+                for instr in im_value.split(';'):
+                    if instr.strip() and not instr.strip().startswith('Crop,') and not instr.strip().startswith('Resize,'):
+                        im_instructions_unencoded.append(instr.strip())
+            else:
+                other_query_parts.append(part)
+
+    final_im_parts = []
+
+    if not img_crop_disable:
+        final_im_parts.append('Crop,rect=(0,0,800,450),gravity=Center')
+
+    final_im_parts.extend(im_instructions_unencoded)
+
+    final_im_parts.append(f'Resize,width={target_width}')
+
+    im_value_for_url = ';'.join(final_im_parts)
+
+    new_query_parts_for_url = []
+    if im_value_for_url:
+        new_query_parts_for_url.append(f"im={im_value_for_url}")
+
+    new_query_parts_for_url.extend(other_query_parts)
+
+    new_query_string = '&'.join(new_query_parts_for_url)
+
+    return parsed_url._replace(query=new_query_string).geturl()
+
+
+def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_timezone: str = 'Europe/Berlin', img_crop_disable: bool = False) -> None:
     """
     Generates an XMLTV-compliant XML file from the scraped data
     using xml.sax.saxutils.XMLGenerator for streaming output.
@@ -1548,6 +1614,8 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
     :type output_file: str
     :param xmltv_timezone: The timezone string to use for XMLTV header and program times.
     :type xmltv_timezone: str
+    :param img_crop_disable: If True, disables default image cropping.
+    :type img_crop_disable: bool
     """
     logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator.")
 
@@ -1598,6 +1666,12 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
             output_stream.write(b'\n')
             handler.endElement('channel')
             output_stream.write(b'\n')
+
+        image_sizes_to_generate = {
+            150: '1',
+            300: '2',
+            600: '3'
+        }
 
         for item in data_list:
             start_time_xmltv: Optional[str] = item.get('starttime_xmltv')
@@ -1751,19 +1825,17 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                 handler.endElement('review')
                 output_stream.write(b'\n    ')
 
-            if item.get('image_base_path'):
-                image_url_300: str = f"{item['image_base_path']}_300.jpg"
-                image_url_600: str = f"{item['image_base_path']}_600.jpg"
-
-                handler.startElement('image', {'type': 'still', 'size': '2', 'orient': 'L', 'system': 'tvsp'})
-                handler.characters(image_url_300)
-                handler.endElement('image')
-                output_stream.write(b'\n    ')
-
-                handler.startElement('image', {'type': 'still', 'size': '3', 'orient': 'L', 'system': 'tvsp'})
-                handler.characters(image_url_600)
-                handler.endElement('image')
-                output_stream.write(b'\n    ')
+            if item.get('image_url'):
+                for width, size_attr_value in image_sizes_to_generate.items():
+                    processed_image_url = _build_image_url_with_params(
+                        item['image_url'],
+                        width,
+                        img_crop_disable
+                    )
+                    handler.startElement('image', {'type': 'still', 'size': size_attr_value, 'orient': 'L', 'system': 'tvsp'})
+                    handler.characters(processed_image_url)
+                    handler.endElement('image')
+                    output_stream.write(b'\n    ')
 
             handler.endElement('programme')
             output_stream.write(b'\n')
@@ -1854,11 +1926,17 @@ Examples:
         help=f'Output format: "xmltv", "json" (JSON array). Default: {DEFAULT_OUTPUT_FORMAT}.'
     )
     output_group.add_argument(
+        '--xmltv-timezone',
+        type=str,
+        default='Europe/Berlin',
+        help='Specifies the timezone to use for XMLTV output (e.g., "Europe/Berlin", "America/New_York"). This affects the timestamps in the XMLTV file. Default: "Europe/Berlin".'
+    )
+    output_group.add_argument(
         '--img-size',
         type=str,
-        choices=['300', '600'],
+        choices=['150', '300', '600'],
         default=DEFAULT_IMG_SIZE,
-        help=f'Image size to extract ("300" or "600"). Default: {DEFAULT_IMG_SIZE}.'
+        help=f'Image size to extract ("150", "300" or "600"). Default: {DEFAULT_IMG_SIZE}.'
     )
     output_group.add_argument(
         '--img-check',
@@ -1867,10 +1945,10 @@ Examples:
         help='If set, an additional HEAD request will be performed to check the validity of image URLs. Increases scraping time.'
     )
     output_group.add_argument(
-        '--xmltv-timezone',
-        type=str,
-        default='Europe/Berlin',
-        help='Specifies the timezone to use for XMLTV output (e.g., "Europe/Berlin", "America/New_York"). This affects the timestamps in the XMLTV file. Default: "Europe/Berlin".'
+        '--img-crop-disable',
+        action='store_true',
+        dest='img_crop_disable',
+        help='If set, disables the default 16:9 image cropping for images without existing crop instructions.'
     )
 
     logging_group = parser.add_argument_group('Logging')
@@ -2031,7 +2109,8 @@ Examples:
         keep_past_cache=args.keep_past_cache,
         cache_clear=args.clear_cache,
         xmltv_timezone=args.xmltv_timezone,
-        cache_validation_tolerance=args.cache_validation_tolerance
+        cache_validation_tolerance=args.cache_validation_tolerance,
+        img_crop_disable=args.img_crop_disable
     )
 
     if args.list_channels:
@@ -2077,7 +2156,7 @@ Examples:
         if output_filename == default_output_file_arg and not output_filename.endswith('.xml'):
             output_filename = f"{output_filename}.xml"
 
-        generate_xmltv(extracted_data, output_filename, scraper.xmltv_timezone)
+        generate_xmltv(extracted_data, output_filename, scraper.xmltv_timezone, scraper.img_crop_disable)
 
     else:
         logger.warning("No data extracted or invalid output format specified. Output file will not be created.")
