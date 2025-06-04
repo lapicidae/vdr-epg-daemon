@@ -162,8 +162,6 @@ def _process_rating_string(original_rating_string: Optional[str]) -> Optional[st
 class TvsHtmlParser:
     """
     Encapsulates all HTML parsing logic for TVSpielfilm.de.
-
-    This class is responsible for extracting data from lxml.html elements.
     """
     def __init__(self):
         """
@@ -178,7 +176,7 @@ class TvsHtmlParser:
         self.re_duration_minutes_match: re.Pattern = re.compile(r'(\d+)\s*Min\.', re.IGNORECASE)
         self.re_fsk_match: re.Pattern = re.compile(r'(\d+)')
         self.re_rating_class_match: re.Pattern = re.compile(r'rating-(\d+)')
-        self.re_adsc_sparte_match: re.Pattern = re.compile(r'"adsc_sparte":"([^"]+)"')
+        self.re_adsc_sparte_match: re.compile = re.compile(r'"adsc_sparte":"([^"]+)"')
 
         self.selector_sender_links: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('div.component.channels.all-channels.abc-scroll ul li a')
         self.selector_li_elements: lxml.cssselect.CSSSelector = lxml.cssselect.CSSSelector('li.tv-tip.time-listing.js-tv-show.channels')
@@ -526,7 +524,6 @@ class TvsHtmlParser:
     def parse_program_details(self, html_content: str, detail_data_template: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parses the detail page of a program to extract additional information.
-        This method fetches the HTML content and delegates parsing to the TvsHtmlParser.
 
         :param html_content: The HTML content of the program detail page.
         :type html_content: str
@@ -801,7 +798,7 @@ class TvsLeanScraper:
             return None
 
     @functools.lru_cache(maxsize=128)
-    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, allow_redirects: bool = True, is_detail_page: bool = False) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
+    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, allow_redirects: bool = True) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
         """
         Sends an HTTP GET request to the given URL using the configured session.
 
@@ -819,8 +816,6 @@ class TvsLeanScraper:
         :type cached_content_length: Optional[int]
         :param allow_redirects: Whether to follow HTTP redirects. Defaults to True.
         :type allow_redirects: bool
-        :param is_detail_page: If True, suppresses certain debug messages related to cache misses.
-        :type is_detail_page: bool
         :returns: A tuple (response_content, new_etag, new_last_modified, fetched_content_length).
                   response_content is None if 304 Not Modified or if content is semantically identical within tolerance.
                   fetched_content_length is for the *newly fetched* content.
@@ -913,6 +908,9 @@ class TvsLeanScraper:
             last_modified: Optional[str] = cache_content.get('last_modified')
             cached_at_str: Optional[str] = cache_content.get('cached_at')
             content_length: Optional[int] = cache_content.get('content_length')
+            # Ensure content_length is always an int, default to 0 if None
+            if content_length is None:
+                content_length = 0
 
             is_fresh: bool = False
             if cached_at_str:
@@ -1001,8 +999,7 @@ class TvsLeanScraper:
             channels_url,
             etag=cached_etag,
             last_modified=cached_last_modified,
-            cached_content_length=cached_content_length,
-            is_detail_page=False
+            cached_content_length=cached_content_length
         )
 
         if response_content is not None:
@@ -1023,7 +1020,7 @@ class TvsLeanScraper:
             logger.error("Failed to fetch channel list content and no cached data available.")
             return []
 
-    def _check_image_url_head(self, url: str, original_image_url: str, item_key: str) -> str:
+    def _check_image_url_head(self, url: str, original_image_url: str, item_key: str) -> Tuple[str, str]:
         """
         Checks the status of an image URL by performing a HEAD request using the main session.
 
@@ -1033,27 +1030,24 @@ class TvsLeanScraper:
         :type original_image_url: str
         :param item_key: A unique identifier for the program item for logging purposes.
         :type item_key: str
-        :returns: The validated image URL or the original URL if validation fails.
-        :rtype: str
+        :returns: A tuple containing the validated image URL and its status ("avail" or "unknown").
+        :rtype: Tuple[str, str]
         """
         if self.stop_event.is_set():
             logger.debug(f"Stop event set. Aborting image check for {url}.")
-            return original_image_url
+            return original_image_url, "unknown"
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
-        for _ in range(2):
-            response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
+        response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
 
-            if response is None or response.status_code != 200:
-                logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code if response else 'None'}) for {url}. Retrying...")
-            else:
-                final_image_url: str = response.url
-                logger.debug(f"Item {item_key} - Image URL check successful (Status {response.status_code}). Using URL: {final_image_url}")
-                return final_image_url
-
-        logger.error(f"Failed to fetch {url} after retrying.")
-        return original_image_url
+        if response is None or response.status_code != 200:
+            logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code if response else 'None'}) for {url}. Falling back to original URL.")
+            return original_image_url, "unknown"
+        else:
+            final_image_url: str = response.url
+            logger.debug(f"Item {item_key} - Image URL check successful (Status {response.status_code}). Using URL: {final_image_url}")
+            return final_image_url, "avail"
 
     def _get_daily_cache_filepath(self, channel_id: str, date: datetime.date) -> str:
         """
@@ -1122,6 +1116,9 @@ class TvsLeanScraper:
             last_modified: Optional[str] = cache_content.get('last_modified')
             cached_at_str: Optional[str] = cache_content.get('cached_at')
             content_length: Optional[int] = cache_content.get('content_length')
+            # Ensure content_length is always an int, default to 0 if None
+            if content_length is None:
+                content_length = 0
             cached_xmltv_timezone: Optional[str] = cache_content.get('xmltv_timezone')
 
             is_fresh: bool = False
@@ -1240,7 +1237,15 @@ class TvsLeanScraper:
         channel_url: str = channel_info['url']
         channel_source_id: str = channel_info['source_id']
 
-        programs_for_day: List[Dict[str, Any]] = []
+        items_to_process: List[Dict[str, Any]] = []
+        processed_items: List[Dict[str, Any]] = []
+        new_etag: Optional[str] = None
+        new_last_modified: Optional[str] = None
+        fetched_content_length: Optional[int] = None
+
+        cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
+            None, None, None, None, None, False
+        )
 
         if self.enable_cache and not self.cache_clear_requested:
             cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
@@ -1249,123 +1254,118 @@ class TvsLeanScraper:
 
             if is_cache_fresh and cached_data is not None:
                 if cached_xmltv_timezone == self.xmltv_timezone:
-                    programs_for_day = cached_data
+                    items_to_process = cached_data
                     logger.debug(f"Using fresh data from JSON cache for {channel_name} on {current_date.strftime('%Y-%m-%d')} (timezone matches).")
-                    return programs_for_day
                 else:
                     logger.info(f"Cached data for {channel_name} on {current_date.strftime('%Y-%m-%d')} is fresh but timezone differs (cached: {cached_xmltv_timezone}, requested: {self.xmltv_timezone}). Reprocessing timestamps.")
-                    reprocessed_programs: List[Dict[str, Any]] = []
-                    for item_data in cached_data:
-                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
-                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
-                        if item_data.get('image_url'):
-                            item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
-                        reprocessed_programs.append(item_data)
-                    self._save_daily_json_cache(channel_source_id, current_date, reprocessed_programs, cached_etag, cached_last_modified, cached_content_length, self.xmltv_timezone)
-                    return reprocessed_programs
+                    items_to_process = cached_data
+                new_etag = cached_etag
+                new_last_modified = cached_last_modified
+                fetched_content_length = cached_content_length
         else:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
-                None, None, None, None, None, False
-            )
             if self.cache_clear_requested:
                 logger.debug(f"Cache clear requested. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
             elif not self.enable_cache:
                 logger.debug(f"Cache disabled. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
 
-        schedule_url: str = self._build_schedule_url(channel_url, current_date)
+        if not items_to_process or not is_cache_fresh:
+            schedule_url: str = self._build_schedule_url(channel_url, current_date)
+            for attempt in range(self.max_schedule_retries + 1):
+                if self.stop_event.is_set():
+                    logger.debug(f"Stop event set. Aborting schedule fetch attempts for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
+                    return []
+                try:
+                    attempt_str: str = f" (Attempt {attempt + 1}/{self.max_schedule_retries + 1})" if attempt > 0 else ""
+                    logger.debug(f"Attempting to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
 
-        for attempt in range(self.max_schedule_retries + 1):
-            if self.stop_event.is_set():
-                logger.debug(f"Stop event set. Aborting schedule fetch attempts for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
-                return []
-            try:
-                attempt_str: str = f" (Attempt {attempt + 1}/{self.max_schedule_retries + 1})" if attempt > 0 else ""
-
-                logger.debug(f"Attempting to fetch schedule for {channel_name} on {current_date.strftime('%Y-%m-%d')} from {schedule_url}{attempt_str}")
-
-                response_content, new_etag, new_last_modified, fetched_content_length = self.fetch_url(
-                    schedule_url,
-                    etag=cached_etag,
-                    last_modified=cached_last_modified,
-                    cached_content_length=cached_content_length,
-                    is_detail_page=False
-                )
-
-                if response_content is not None:
-                    logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} was modified or fetched for the first time. Parsing new data.")
-                    basic_parsed_items: List[Dict[str, Any]] = self.html_parser.parse_daily_schedule_items(
-                        response_content,
-                        channel_info,
-                        current_date
+                    response_content, new_etag, new_last_modified, fetched_content_length = self.fetch_url(
+                        schedule_url,
+                        etag=cached_etag,
+                        last_modified=cached_last_modified,
+                        cached_content_length=cached_content_length
                     )
-                    if self.stop_event.is_set():
+
+                    if response_content is not None:
+                        logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} was modified or fetched for the first time. Parsing new data.")
+                        items_to_process = self.html_parser.parse_daily_schedule_items(
+                            response_content,
+                            channel_info,
+                            current_date
+                        )
+                        break
+                    elif cached_data is not None:
+                        logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} not modified (304) or semantically identical. Using stale JSON cache.")
+                        items_to_process = cached_data
+                        new_etag = cached_etag
+                        new_last_modified = cached_last_modified
+                        fetched_content_length = cached_content_length
+                        break
+                    else:
+                        logger.warning(f"Could not retrieve or parse program for {channel_name} on {current_date.strftime('%Y-%m-%d')}. No data available. Retrying...")
+                        if attempt < self.max_schedule_retries:
+                            time.sleep(1 * (attempt + 1))
+                        else:
+                            logger.error(f"Max retries ({self.max_schedule_retries}) exhausted for schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Skipping this day.")
+                            return []
+                except KeyboardInterrupt:
+                    self.stop_event.set()
+                    logger.info(f"KeyboardInterrupt caught in worker for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Signaling main thread to stop.")
+                    raise
+                except Exception as exc:
+                    logger.exception(f"Schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')} generated an exception on attempt {attempt + 1}: {exc}")
+                    if attempt < self.max_schedule_retries:
+                        time.sleep(1 * (attempt + 1))
+                    else:
+                        logger.error(f"Max retries ({self.max_schedule_retries}) exhausted for schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Skipping this day.")
                         return []
 
-                    final_items_for_day: List[Dict[str, Any]] = []
-                    for item_data in basic_parsed_items:
-                        if self.stop_event.is_set():
-                            logger.debug(f"Stop event set. Aborting detail processing for {channel_name}.")
-                            return []
+        if self.stop_event.is_set():
+            return []
 
-                        if self.check_img and item_data.get('image_url'):
-                            orig_img: str = item_data['image_url']
-                            item_id_for_log: str = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.html_parser.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
-                            logger.debug(f"Item {item_id_for_log}: Image URL check scheduled for: {item_data['image_url']}")
-                            item_data['image_url'] = self._check_image_url_head(item_data['image_url'], orig_img, item_id_for_log)
+        for item_data in items_to_process:
+            if self.stop_event.is_set():
+                logger.debug(f"Stop event set. Aborting detail processing for {channel_name}.")
+                return []
 
-                        if item_data.get('image_url'):
-                            item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
+            original_image_url = item_data.get('image_url')
+            item_data['image_check'] = item_data.get('image_check', 'unknown')
 
-                        if item_data.get('link'):
-                            detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
-                            item_data.update(detail_page_data)
-                        else:
-                            logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
-                            item_data.update(self._DETAIL_DATA_TEMPLATE.copy())
-
-                        item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
-                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
-                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
-                        final_items_for_day.append(item_data)
-
-                    if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, final_items_for_day, new_etag, new_last_modified, fetched_content_length, self.xmltv_timezone)
-                    return final_items_for_day
-
-                elif cached_data is not None:
-                    logger.debug(f"HTML content for {channel_name} on {current_date.strftime('%Y-%m-%d')} not modified (304) or semantically identical. Using stale JSON cache.")
-                    reprocessed_cached_data: List[Dict[str, Any]] = []
-                    for item_data in cached_data:
-                        item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
-                        item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
-                        if item_data.get('image_url'):
-                            item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
-                        reprocessed_cached_data.append(item_data)
-
-                    if self.enable_cache:
-                        self._save_daily_json_cache(channel_source_id, current_date, reprocessed_cached_data, cached_etag, cached_last_modified, cached_content_length, self.xmltv_timezone)
-                    return reprocessed_cached_data
+            if self.check_img and original_image_url:
+                if item_data['image_check'] != 'avail':
+                    item_id_for_log: str = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.html_parser.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
+                    logger.debug(f"Item {item_id_for_log}: Image URL re-check scheduled for: {original_image_url}")
+                    checked_url, status = self._check_image_url_head(original_image_url, original_image_url, item_id_for_log)
+                    item_data['image_url'] = checked_url
+                    item_data['image_check'] = status
                 else:
-                    logger.warning(f"Could not retrieve or parse program for {channel_name} on {current_date.strftime('%Y-%m-%d')}. No cached data available.")
-                    return []
-            except KeyboardInterrupt:
-                self.stop_event.set()
-                logger.info(f"KeyboardInterrupt caught in worker for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Signaling main thread to stop.")
-                raise
-            except Exception as exc:
-                logger.exception(f"Schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')} generated an exception on attempt {attempt + 1}: {exc}")
-                if attempt < self.max_schedule_retries:
-                    time.sleep(1 * (attempt + 1))
-                else:
-                    logger.error(f"Max retries ({self.max_schedule_retries}) exhausted for schedule generation for {channel_name} on {current_date.strftime('%Y-%m-%d')}. Skipping this day.")
-                    return []
-        return []
+                    logger.debug(f"Item {item_data.get('title', 'N/A')}: Image already checked and available from cache.")
+            elif not self.check_img and original_image_url:
+                item_data['image_check'] = 'not_checked'
+
+            if item_data.get('image_url'):
+                item_data['image_url'] = self._strip_im_parameter_for_cache(item_data['image_url'])
+
+            if item_data.get('link') and not item_data.get('longdescription'):
+                detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
+                item_data.update(detail_page_data)
+            elif not item_data.get('link'):
+                logger.warning(f"No detail link found for item: {item_data.get('title', 'N/A')}. Skipping detail data extraction.")
+                item_data.update(self._DETAIL_DATA_TEMPLATE.copy())
+
+            item_data['rating_cleaned'] = _process_rating_string(item_data.get('rating'))
+            item_data['starttime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('starttime'), self.xmltv_timezone)
+            item_data['endtime_xmltv'] = _convert_unix_to_xmltv_time(item_data.get('endtime'), self.xmltv_timezone)
+            processed_items.append(item_data)
+
+        if self.enable_cache:
+            self._save_daily_json_cache(channel_source_id, current_date, processed_items, new_etag, new_last_modified, fetched_content_length, self.xmltv_timezone)
+        return processed_items
+
 
     @functools.lru_cache(maxsize=128)
     def parse_detail_page(self, detail_url: str) -> Dict[str, Any]:
         """
         Parses the detail page of a program to extract additional information.
-        This method fetches the HTML content and delegates parsing to the TvsHtmlParser.
 
         :param detail_url: The URL of the program's detail page.
         :type detail_url: str
@@ -1376,7 +1376,7 @@ class TvsLeanScraper:
             logger.debug(f"Stop event set. Aborting detail page parsing for {detail_url}.")
             return self._DETAIL_DATA_TEMPLATE.copy()
 
-        response_content, _, _, _ = self.fetch_url(detail_url, is_detail_page=True)
+        response_content, _, _, _ = self.fetch_url(detail_url)
 
         if not response_content:
             logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
@@ -1388,9 +1388,6 @@ class TvsLeanScraper:
     def _proactive_cache_cleanup(self) -> None:
         """
         Proactively removes cache files that are outside the MAX_DAYS_TO_SCRAPE window.
-
-        This ensures that directories become truly empty if all their files are irrelevant.
-        The TTL, last_modified, and cached_at timestamps are ignored for this cleanup.
         """
         if self.stop_event.is_set():
             logger.debug("Stop event set. Aborting proactive cache cleanup.")
