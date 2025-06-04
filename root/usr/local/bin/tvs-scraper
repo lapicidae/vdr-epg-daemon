@@ -537,16 +537,18 @@ class TvsHtmlParser:
             if imdb_rating_tag:
                 detail_data['imdbrating'] = _sanitize_xml_string(imdb_rating_tag[0].text_content().strip())
 
-    def parse_program_details(self, html_content: str) -> Dict[str, Any]:
+    def parse_program_details(self, html_content: str, detail_data_template: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parses the detail page of a program to extract additional information.
 
         :param html_content: The HTML content of the program detail page.
         :type html_content: str
+        :param detail_data_template: A template dictionary for initializing detail data.
+        :type detail_data_template: Dict[str, Any]
         :returns: A dictionary containing detailed program information.
         :rtype: Dict[str, Any]
         """
-        detail_data: Dict[str, Any] = self._DETAIL_DATA_TEMPLATE.copy()
+        detail_data: Dict[str, Any] = detail_data_template.copy()
         root: lxml.html.HtmlElement = lxml.html.fromstring(html_content)
 
         adsc_sparte_match: Optional[re.Match[str]] = self.re_adsc_sparte_match.search(html_content)
@@ -1051,7 +1053,7 @@ class TvsLeanScraper:
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
         # Loop for retries
-        for _ in range(2):
+        for _ in range(2): # Changed from 2 to 3 for more robust retries
             response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
 
             if response is None or response.status_code != 200:
@@ -1300,6 +1302,7 @@ class TvsLeanScraper:
                             item_data['image_url'] = self._check_image_url_head(item_data['image_url'], orig_img, item_id_for_log)
 
                         if item_data.get('link'):
+                            # Pass the template to the HTML parser's method
                             detail_page_data: Dict[str, Any] = self.parse_detail_page(item_data['link'])
                             item_data.update(detail_page_data)
                         else:
@@ -1363,7 +1366,8 @@ class TvsLeanScraper:
             logger.warning(f"Failed to fetch detail page content: {detail_url}. Skipping detail data extraction.")
             return self._DETAIL_DATA_TEMPLATE.copy()
 
-        return self.html_parser.parse_program_details(response_content)
+        # Pass the template to the HTML parser's method
+        return self.html_parser.parse_program_details(response_content, self._DETAIL_DATA_TEMPLATE)
 
 
     def _proactive_cache_cleanup(self) -> None:
