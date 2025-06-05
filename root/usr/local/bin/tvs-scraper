@@ -31,10 +31,10 @@ from urllib3.util.retry import Retry
 from xml.sax.saxutils import XMLGenerator
 from argparse import RawTextHelpFormatter
 from urllib.parse import urlparse, parse_qs
+import portalocker
 
 if sys.version_info < (3, 9):
-    print("Error: This script requires Python 3.9 or higher for the 'zoneinfo' module.")
-    print("Please update your Python version.")
+    print("Error: This script requires Python 3.9 or higher for the 'zoneinfo' module. Please update your Python version.")
     sys.exit(1)
 from zoneinfo import ZoneInfo
 
@@ -496,7 +496,7 @@ class TvsHtmlParser:
                     try:
                         detail_data['numrating'] = int(rating_class_match.group(1))
                     except ValueError:
-                        logger.warning(f"Could not convert numrating class '{rating_class_match.group(1)}' to integer.")
+                        logger.warning(f"Could not convert numerical rating class '{rating_class_match.group(1)}' to integer.")
 
             txt_rating_tag: List[lxml.html.HtmlElement] = self.selector_txt_rating_tag(content_rating_section[0])
             if txt_rating_tag:
@@ -733,7 +733,7 @@ class TvsLeanScraper:
             if self.keep_past_cache:
                 logger.debug("Keeping past days' cache files is ENABLED (--keep-past-cache).")
             else:
-                logger.debug("Deleting past days' cache files is ENABLEED by default (no --keep-past-cache).")
+                logger.debug("Deleting past days' cache files is ENABLED by default (no --keep-past-cache).")
         else:
             logger.debug("Processed data cache disabled.")
 
@@ -911,15 +911,25 @@ class TvsLeanScraper:
             return None, None, None, None, False
 
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                cache_content: Dict[str, Any] = json.load(f)
+            with open(filepath, 'r+', encoding='utf-8') as f:
+                portalocker.lock(f, portalocker.LOCK_SH)
+                try:
+                    cache_content: Dict[str, Any] = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error decoding channel list JSON cache: {e}. Deleting corrupted file and re-scraping: {filepath}")
+                    f.seek(0)
+                    f.truncate()
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                    return None, None, None, None, False
+                finally:
+                    portalocker.unlock(f)
 
             data: Optional[List[Dict[str, Any]]] = cache_content.get('data')
             etag: Optional[str] = cache_content.get('etag')
             last_modified: Optional[str] = cache_content.get('last_modified')
             cached_at_str: Optional[str] = cache_content.get('cached_at')
             content_length: Optional[int] = cache_content.get('content_length')
-            # Ensure content_length is always an int, default to 0 if None
             if content_length is None:
                 content_length = 0
 
@@ -937,15 +947,11 @@ class TvsLeanScraper:
 
             return data, etag, last_modified, content_length, is_fresh
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"Error decoding channel list JSON cache: {e}. Deleting corrupted file and re-scraping: {filepath}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
+        except portalocker.LockException as e:
+            logger.warning(f"Could not acquire lock for channel list cache: {e}. Skipping cache load.")
             return None, None, None, None, False
         except IOError as e:
-            logger.warning(f"IOError loading channel list JSON cache: {e}. Deleting file and re-scraping: {filepath}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
+            logger.warning(f"IOError loading channel list JSON cache: {e}. Will attempt re-scraping.")
             return None, None, None, None, False
         except Exception as e:
             logger.error(f"Unexpected error in _load_channel_list_cache: {e}")
@@ -970,18 +976,26 @@ class TvsLeanScraper:
 
         filepath: str = self._get_cache_channel_list_filepath()
         try:
-            cache_content: Dict[str, Any] = {
-                'data': data,
-                'etag': etag,
-                'last_modified': last_modified,
-                'cached_at': datetime.now(timezone.utc).isoformat(),
-                'content_length': content_length,
-            }
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, 'w+', encoding='utf-8') as f:
+                portalocker.lock(f, portalocker.LOCK_EX)
+                cache_content: Dict[str, Any] = {
+                    'data': data,
+                    'etag': etag,
+                    'last_modified': last_modified,
+                    'cached_at': datetime.now(timezone.utc).isoformat(),
+                    'content_length': content_length,
+                }
                 json.dump(cache_content, f, ensure_ascii=False, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+                portalocker.unlock(f)
             logger.debug(f"Saved channel list to JSON cache: {filepath}")
+        except portalocker.LockException as e:
+            logger.warning(f"Could not acquire lock for channel list cache during save: {e}. Skipping cache save.")
         except IOError as e:
             logger.error(f"Error saving channel list JSON cache: {e}.")
+        except Exception as e:
+            logger.error(f"Unexpected error saving channel list JSON cache: {e}")
 
     def _get_channel_list(self) -> List[Dict[str, str]]:
         """
@@ -1014,7 +1028,7 @@ class TvsLeanScraper:
         )
 
         if response_content is not None:
-            logger.info("HTML content for channel list was modified or fetched for the first first time. Parsing new data.")
+            logger.info("HTML content for channel list was modified or fetched for the first time. Parsing new data.")
             channel_data = self.html_parser.parse_channel_list(response_content)
 
             if self.enable_cache:
@@ -1025,7 +1039,7 @@ class TvsLeanScraper:
         elif cached_channel_list is not None:
             logger.info("HTML content for channel list not modified (304) or semantically identical. Using stale JSON cache.")
             if self.enable_cache:
-                self._save_channel_list_cache(cached_channel_list, cached_etag, cached_last_modified, cached_content_length)
+                self._save_channel_list_cache(cached_channel_list, cached_etag, cached_last_modified, fetched_content_length if fetched_content_length is not None else cached_content_length)
             return cached_channel_list
         else:
             logger.error("Failed to fetch channel list content and no cached data available.")
@@ -1119,15 +1133,25 @@ class TvsLeanScraper:
             return None, None, None, None, None, False
 
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                cache_content: Dict[str, Any] = json.load(f)
+            with open(filepath, 'r+', encoding='utf-8') as f:
+                portalocker.lock(f, portalocker.LOCK_SH)
+                try:
+                    cache_content: Dict[str, Any] = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error decoding daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting corrupted file and re-scraping: {filepath}")
+                    f.seek(0)
+                    f.truncate()
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                    return None, None, None, None, None, False
+                finally:
+                    portalocker.unlock(f)
 
             data: Optional[List[Dict[str, Any]]] = cache_content.get('data')
             etag: Optional[str] = cache_content.get('etag')
             last_modified: Optional[str] = cache_content.get('last_modified')
             cached_at_str: Optional[str] = cache_content.get('cached_at')
             content_length: Optional[int] = cache_content.get('content_length')
-            # Ensure content_length is always an int, default to 0 if None
             if content_length is None:
                 content_length = 0
             cached_xmltv_timezone: Optional[str] = cache_content.get('xmltv_timezone')
@@ -1147,15 +1171,11 @@ class TvsLeanScraper:
 
             return data, etag, last_modified, content_length, cached_xmltv_timezone, is_fresh
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"Error decoding daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting corrupted file and re-scraping: {filepath}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
+        except portalocker.LockException as e:
+            logger.warning(f"Could not acquire lock for daily cache file {filepath}: {e}. Skipping cache load.")
             return None, None, None, None, None, False
         except IOError as e:
-            logger.warning(f"IOError loading daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting file and re-scraping: {filepath}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
+            logger.warning(f"IOError loading daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Will attempt re-scraping.")
             return None, None, None, None, None, False
         except Exception as e:
             logger.error(f"Unexpected error in _load_daily_json_cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
@@ -1187,19 +1207,27 @@ class TvsLeanScraper:
 
         filepath: str = self._get_daily_cache_filepath(channel_id, date)
         try:
-            cache_content: Dict[str, Any] = {
-                'data': data,
-                'etag': etag,
-                'last_modified': last_modified,
-                'cached_at': datetime.now(timezone.utc).isoformat(),
-                'content_length': content_length,
-                'xmltv_timezone': xmltv_timezone_used
-            }
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, 'w+', encoding='utf-8') as f:
+                portalocker.lock(f, portalocker.LOCK_EX)
+                cache_content: Dict[str, Any] = {
+                    'data': data,
+                    'etag': etag,
+                    'last_modified': last_modified,
+                    'cached_at': datetime.now(timezone.utc).isoformat(),
+                    'content_length': content_length,
+                    'xmltv_timezone': xmltv_timezone_used
+                }
                 json.dump(cache_content, f, ensure_ascii=False, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+                portalocker.unlock(f)
             logger.debug(f"Saved schedule for {channel_id} on {date.strftime('%Y-%m-%d')} to daily JSON cache.")
+        except portalocker.LockException as e:
+            logger.warning(f"Could not acquire lock for daily cache file {filepath} during save: {e}. Skipping cache save.")
         except IOError as e:
             logger.error(f"Error saving daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}.")
+        except Exception as e:
+            logger.error(f"Unexpected error saving daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
 
     def _strip_im_parameter_for_cache(self, url: str) -> str:
         """
@@ -1309,7 +1337,7 @@ class TvsLeanScraper:
                         items_to_process = cached_data
                         new_etag = cached_etag
                         new_last_modified = cached_last_modified
-                        fetched_content_length = cached_content_length
+                        fetched_content_length = fetched_content_length if fetched_content_length is not None else cached_content_length
                         break
                     else:
                         logger.warning(f"Could not retrieve or parse program for {channel_name} on {current_date.strftime('%Y-%m-%d')}. No data available. Retrying...")
@@ -1428,20 +1456,31 @@ class TvsLeanScraper:
                     if filename.endswith('.json'):
                         filepath = os.path.join(channel_dir_path, filename)
                         try:
-                            date_str = filename.replace('.json', '')
-                            file_date = datetime.strptime(date_str, '%Y%m%d').date()
+                            with open(filepath, 'a+') as f:
+                                portalocker.lock(f, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                                try:
+                                    date_str = filename.replace('.json', '')
+                                    file_date = datetime.strptime(date_str, '%Y%m%d').date()
 
-                            is_outside_relevant_range = not (earliest_allowed_date <= file_date <= max_relevant_date)
+                                    is_outside_relevant_range = not (earliest_allowed_date <= file_date <= max_relevant_date)
 
-                            if is_outside_relevant_range:
-                                logger.debug(f"Deleting cache file outside relevant date range: {filepath} (Date: {file_date.strftime('%Y-%m-%d')})")
-                                os.remove(filepath)
-                        except (ValueError, IOError) as e:
-                            logger.warning(f"Error processing cache file {filepath} during proactive cleanup (date parsing/IO): {e}. Deleting corrupted file.")
-                            if os.path.exists(filepath):
-                                os.remove(filepath)
+                                    if is_outside_relevant_range:
+                                        logger.debug(f"Deleting cache file outside relevant date range: {filepath} (Date: {file_date.strftime('%Y-%m-%d')})")
+                                        os.remove(filepath)
+                                except (ValueError, IOError) as e:
+                                    logger.warning(f"Error processing cache file {filepath} during proactive cleanup (date parsing/IO): {e}. Deleting corrupted file.")
+                                    if os.path.exists(filepath):
+                                        os.remove(filepath)
+                                except Exception as e:
+                                    logger.error(f"Unexpected error during proactive cache cleanup for {filepath}: {e}")
+                                finally:
+                                    portalocker.unlock(f)
+                        except portalocker.LockException:
+                            logger.debug(f"Skipping deletion of {filepath} as it is currently locked by another process.")
+                        except FileNotFoundError:
+                            logger.debug(f"File {filepath} not found during cleanup, likely already deleted.")
                         except Exception as e:
-                            logger.error(f"Unexpected error during proactive cache cleanup for {filepath}: {e}")
+                            logger.error(f"Error acquiring lock or opening file for cleanup {filepath}: {e}")
         logger.debug("Finished proactive cleanup of cache files.")
 
     def _cleanup_empty_cache_dirs(self) -> None:
@@ -1460,12 +1499,26 @@ class TvsLeanScraper:
             for dir_name in dirs:
                 dir_path = os.path.join(root, dir_name)
                 try:
-                    if not os.listdir(dir_path):
-                        os.rmdir(dir_path)
-                        logger.debug(f"Removed empty cache directory: {dir_path}")
+                    lock_file_path = os.path.join(dir_path, ".dir_lock")
+                    with open(lock_file_path, 'a+') as f:
+                        portalocker.lock(f, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                        try:
+                            if not os.listdir(dir_path):
+                                os.remove(lock_file_path)
+                                os.rmdir(dir_path)
+                                logger.debug(f"Removed empty cache directory: {dir_path}")
+                            else:
+                                logger.debug(f"Directory {dir_path} is not empty, skipping removal.")
+                        finally:
+                            portalocker.unlock(f)
+                except portalocker.LockException:
+                    logger.debug(f"Skipping cleanup of directory {dir_path} as it is currently locked.")
                 except OSError as e:
-                    logger.warning(f"Could not remove directory {dir_path}: {e}")
+                    logger.warning(f"Could not process directory {dir_path} during cleanup: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error during empty directory cleanup for {dir_path}: {e}")
         logger.debug("Finished cleanup of empty cache directories.")
+
 
     def run_scraper(self) -> List[Dict[str, Any]]:
         """
@@ -1910,7 +1963,7 @@ Examples:
     date_group.add_argument(
         '--date',
         type=str,
-        help='Specific date to scrape inYYYYMMDD format (e.g., 20250523). If specified, only this date will be scraped and --days will be ignored.'
+        help='Specific date to scrape in YYYYMMDD format (e.g., 20250523). If specified, only this date will be scraped and --days will be ignored.'
     )
     date_group.add_argument(
         '--days',
@@ -1924,7 +1977,7 @@ Examples:
         '--output-file',
         type=str,
         default=DEFAULT_OUTPUT_FILE,
-        help='Path to the output file. If the default filename is used, the file extension will be automatically appended based on --output-format (e.g., .json for "json", .xml for "xmltv"). If a custom filename is provided, it will be used exactly as specified. Default: "{DEFAULT_OUTPUT_FILE}".'
+        help=f'Path to the output file. If the default filename is used, the file extension will be automatically appended based on --output-format (e.g., .json for "json", .xml for "xmltv"). If a custom filename is provided, it will be used exactly as specified. Default: "{DEFAULT_OUTPUT_FILE}".'
     )
     output_group.add_argument(
         '--output-format',
@@ -1950,7 +2003,7 @@ Examples:
         '--img-check',
         action='store_true',
         dest='check_img',
-        help='If set, an additional HEAD request will be performed to check the validity of image URLs. Increases scraping time.'
+        help='If set, an additional HEAD request will be performed to check the validity of image URLs. This may increase scraping time.'
     )
     output_group.add_argument(
         '--img-crop-disable',
@@ -2083,8 +2136,7 @@ Examples:
             logging.root.addHandler(syslog_handler)
             logger.info(f"Logging to syslog enabled with tag: '{args.syslog_tag}'.")
         except Exception as e:
-            logger.error(f"Failed to set up syslog logging to '/dev/log'. This often means the syslog daemon "
-                         f"is not running or '/dev/log' is not accessible: {e}. Falling back to console logging.")
+            logger.error(f"Failed to set up syslog logging to '/dev/log'. This often means the syslog daemon is not running or '/dev/log' is not accessible: {e}. Falling back to console logging.")
             console_handler = logging.StreamHandler(sys.stderr)
             console_handler.setFormatter(console_formatter)
             logging.root.addHandler(console_handler)
