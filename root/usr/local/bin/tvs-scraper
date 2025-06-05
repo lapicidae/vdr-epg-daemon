@@ -62,7 +62,7 @@ DEFAULT_SYSLOG_TAG: str = 'tvs-scraper'
 DEFAULT_MIN_REQUEST_DELAY: float = 0.05
 DEFAULT_MAX_SCHEDULE_RETRIES: int = 3
 DEFAULT_CACHE_VALIDATION_TOLERANCE: int = 5
-
+DEFAULT_HTTP_TIMEOUT: int = 10
 
 USER_AGENTS: List[str] = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
@@ -570,7 +570,8 @@ class TvsLeanScraper:
                  max_schedule_retries: int = DEFAULT_MAX_SCHEDULE_RETRIES,
                  disable_cache: bool = DEFAULT_CACHE_DISABLE, cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
                  keep_past_cache: bool = False, cache_clear: bool = False, xmltv_timezone: Optional[str] = None,
-                 cache_validation_tolerance: int = DEFAULT_CACHE_VALIDATION_TOLERANCE, img_crop_disable: bool = False):
+                 cache_validation_tolerance: int = DEFAULT_CACHE_VALIDATION_TOLERANCE, img_crop_disable: bool = False,
+                 http_timeout: int = DEFAULT_HTTP_TIMEOUT):
         """
         Initializes the TvsLeanScraper instance.
 
@@ -610,6 +611,8 @@ class TvsLeanScraper:
         :type cache_validation_tolerance: int
         :param img_crop_disable: If True, disables default image cropping.
         :type img_crop_disable: bool
+        :param http_timeout: Timeout for HTTP requests in seconds.
+        :type http_timeout: int
         :raises NotADirectoryError: If the specified cache path exists but is not a directory.
         """
         self.target_sourceids: Optional[set[str]] = None
@@ -720,6 +723,7 @@ class TvsLeanScraper:
         self.cache_clear_requested: bool = cache_clear
         self.cache_validation_tolerance: int = cache_validation_tolerance
         self.img_crop_disable: bool = img_crop_disable
+        self.http_timeout: int = http_timeout
 
         if self.enable_cache:
             os.makedirs(self.processed_data_cache_base_dir, exist_ok=True)
@@ -729,7 +733,7 @@ class TvsLeanScraper:
             if self.keep_past_cache:
                 logger.debug("Keeping past days' cache files is ENABLED (--keep-past-cache).")
             else:
-                logger.debug("Deleting past days' cache files is ENABLED by default (no --keep-past-cache).")
+                logger.debug("Deleting past days' cache files is ENABLEED by default (no --keep-past-cache).")
         else:
             logger.debug("Processed data cache disabled.")
 
@@ -830,7 +834,7 @@ class TvsLeanScraper:
 
         if self.cache_clear_requested:
             logger.debug(f"Performing full GET for {url} (explicit --cache-clear requested).")
-            response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Cache Clear] ")
+            response = self._make_request('get', url, headers, allow_redirects, self.http_timeout, log_prefix="[Cache Clear] ")
             if response is None:
                 return None, None, None, None
 
@@ -846,7 +850,7 @@ class TvsLeanScraper:
         if last_modified:
             headers['If-Modified-Since'] = last_modified
 
-        response = self._make_request('get', url, headers, allow_redirects, 10, log_prefix="[Conditional GET] ")
+        response = self._make_request('get', url, headers, allow_redirects, self.http_timeout, log_prefix="[Conditional GET] ")
 
         if response is None:
             return None, None, None, None
@@ -1039,7 +1043,7 @@ class TvsLeanScraper:
 
         headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
 
-        response = self._make_request('head', url, headers, True, 10, log_prefix=f"Item {item_key} - Image Check ")
+        response = self._make_request('head', url, headers, True, self.http_timeout, log_prefix=f"Item {item_key} - Image Check ")
 
         if response is None or response.status_code != 200:
             logger.warning(f"Item {item_key} - Image URL check failed (Status {response.status_code if response else 'None'}) for {url}. Falling back to original URL.")
@@ -1534,7 +1538,6 @@ class TvsLeanScraper:
                     except concurrent.futures.CancelledError:
                         logger.info(f"Task for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')} was cancelled.")
                     except Exception as exc:
-                        # Log the exception with more context
                         logger.error(f"Error processing schedule for channel {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')}: {exc}", exc_info=True)
 
         logger.info(f"Scraping completed. Total items extracted: {len(all_extracted_items)}")
@@ -2040,6 +2043,12 @@ Examples:
         default=DEFAULT_MAX_SCHEDULE_RETRIES,
         help=f'Maximum number of retries for application-level errors during schedule parsing/generation. Default: {DEFAULT_MAX_SCHEDULE_RETRIES}.'
     )
+    performance_group.add_argument(
+        '--timeout-http',
+        type=int,
+        default=DEFAULT_HTTP_TIMEOUT,
+        help=f'Timeout in seconds for all HTTP requests (GET, HEAD). Default: {DEFAULT_HTTP_TIMEOUT}s.'
+    )
 
     args = parser.parse_args()
 
@@ -2108,7 +2117,8 @@ Examples:
         cache_clear=args.clear_cache,
         xmltv_timezone=args.xmltv_timezone,
         cache_validation_tolerance=args.cache_validation_tolerance,
-        img_crop_disable=args.img_crop_disable
+        img_crop_disable=args.img_crop_disable,
+        http_timeout=args.timeout_http
     )
 
     if args.list_channels:
