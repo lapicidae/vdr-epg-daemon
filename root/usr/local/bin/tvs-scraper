@@ -761,6 +761,7 @@ class TvsLeanScraper:
     def _make_request(self, method: str, url: str, headers: Dict[str, str], allow_redirects: bool, timeout: int, log_prefix: str = "") -> Optional[requests.Response]:
         """
         Centralized function to make HTTP requests and handle RequestExceptions.
+        Includes URL validation before making the request.
 
         :param method: HTTP method ('get' or 'head').
         :type method: str
@@ -780,6 +781,12 @@ class TvsLeanScraper:
         if self.stop_event.is_set():
             logger.debug(f"{log_prefix}Stop event set. Aborting {method.upper()} for {url}.")
             return None
+
+        parsed_url = urlparse(url)
+        if not all([parsed_url.scheme, parsed_url.netloc]) or parsed_url.scheme not in ("http", "https"):
+            logger.warning(f"{log_prefix}Invalid or unsupported URL scheme: {url}. Skipping request.")
+            return None
+
         try:
             if method == 'get':
                 response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=timeout)
