@@ -1534,7 +1534,8 @@ class TvsLeanScraper:
                     except concurrent.futures.CancelledError:
                         logger.info(f"Task for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')} was cancelled.")
                     except Exception as exc:
-                        logger.exception(f"An unhandled exception occurred for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')}: {exc}")
+                        # Log the exception with more context
+                        logger.error(f"Error processing schedule for channel {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')}: {exc}", exc_info=True)
 
         logger.info(f"Scraping completed. Total items extracted: {len(all_extracted_items)}")
 
