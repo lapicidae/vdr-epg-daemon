@@ -863,7 +863,7 @@ class TvsLeanScraper:
         :rtype: Optional[requests.Response]
         """
         headers = dict(headers_tuple) 
-
+        
         if self.stop_event.is_set():
             logger.debug(f"[Cached Wrapper] Stop event set. Aborting {method.upper()} for {url}.")
             return None
@@ -2369,7 +2369,7 @@ Examples:
         if channel_list:
             print("\n--- Available Channels (ID: Name) ---")
             for channel in sorted(channel_list, key=lambda x: x['name'].lower()):
-                print(f"{channel['source_id']}: {channel['name']}")
+                print(f"{channel['source_id'].lower()}: {channel['name']}")
             print("-------------------------------------\n")
         else:
             logger.warning("No channels found.")
