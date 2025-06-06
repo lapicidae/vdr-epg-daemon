@@ -1598,7 +1598,7 @@ class TvsLeanScraper:
                     except concurrent.futures.CancelledError:
                         logger.info(f"Task for {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')} was cancelled.")
                     except Exception as exc:
-                        logger.error(f"Error processing schedule for channel {ch_info['name']} on {current_date_for_task.strftime('%Y-%m-%d')}: {exc}", exc_info=True)
+                        logger.error(f"Error processing schedule for channel {ch_info['name']} on {current_date.strftime('%Y-%m-%d')}: {exc}", exc_info=True)
 
         logger.info(f"Scraping completed. Total items extracted: {len(all_extracted_items)}")
 
@@ -1751,12 +1751,12 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                 programme_attrib['stop'] = stop_time_xmltv
 
             handler.startElement('programme', programme_attrib)
-            output_stream.write(b'  ')
+            output_stream.write(b'\n  ')
 
             handler.startElement('title', {})
             handler.characters(item['title'])
             handler.endElement('title')
-            output_stream.write(b'\n    ')
+            output_stream.write(b'\n  ')
 
             full_description: List[str] = []
             if item.get('shortdescription'):
@@ -1767,16 +1767,16 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                 handler.startElement('desc', {})
                 handler.characters('\n'.join(full_description))
                 handler.endElement('desc')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('director') or item.get('cast') or item.get('screenplay'):
                 handler.startElement('credits', {})
-                output_stream.write(b'\n      ')
+                output_stream.write(b'\n    ')
                 if item.get('director'):
                     handler.startElement('director', {})
                     handler.characters(item['director'])
                     handler.endElement('director')
-                    output_stream.write(b'\n      ')
+                    output_stream.write(b'\n    ')
 
                 if item.get('cast'):
                     cast_entries: List[str] = [c.strip() for c in item['cast'].split(',') if c.strip()]
@@ -1792,7 +1792,7 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                             handler.startElement('actor', {})
                             handler.characters(entry)
                             handler.endElement('actor')
-                        output_stream.write(b'\n      ')
+                        output_stream.write(b'\n    ')
 
                 if item.get('screenplay'):
                     writers: List[str] = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
@@ -1800,16 +1800,17 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                         handler.startElement('writer', {})
                         handler.characters(writer)
                         handler.endElement('writer')
-                        output_stream.write(b'\n      ')
+                        output_stream.write(b'\n    ')
 
+                output_stream.write(b'  ')
                 handler.endElement('credits')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('year'):
                 handler.startElement('date', {})
                 handler.characters(str(item['year']))
                 handler.endElement('date')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('genre'):
                 categories: List[str] = [c.strip() for c in item['genre'].split(',') if c.strip()]
@@ -1817,74 +1818,74 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                     handler.startElement('category', {})
                     handler.characters(category)
                     handler.endElement('category')
-                    output_stream.write(b'\n    ')
+                    output_stream.write(b'\n  ')
 
             if item.get('keyword'):
                 handler.startElement('keyword', {})
                 handler.characters(item['keyword'])
                 handler.endElement('keyword')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('duration') is not None:
                 length_minutes: int = round(item['duration'] / 60)
                 handler.startElement('length', {'units': 'minutes'})
                 handler.characters(str(length_minutes))
                 handler.endElement('length')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('link'):
                 handler.startElement('url', {})
                 handler.characters(item['link'])
                 handler.endElement('url')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('country'):
                 handler.startElement('country', {})
                 handler.characters(item['country'])
                 handler.endElement('country')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('parentalrating') is not None:
                 handler.startElement('rating', {'system': 'FSK'})
-                output_stream.write(b'\n      ')
+                output_stream.write(b'\n    ')
                 handler.startElement('value', {})
                 handler.characters(str(item['parentalrating']))
                 handler.endElement('value')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
                 handler.endElement('rating')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('numrating') is not None:
                 handler.startElement('star-rating', {'system': 'TVSpielfilm'})
-                output_stream.write(b'\n      ')
+                output_stream.write(b'\n    ')
                 handler.startElement('value', {})
                 handler.characters(f"{item['numrating']} / 3")
                 handler.endElement('value')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
                 handler.endElement('star-rating')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('imdbrating'):
                 handler.startElement('star-rating', {'system': 'IMDB'})
-                output_stream.write(b'\n      ')
+                output_stream.write(b'\n    ')
                 handler.startElement('value', {})
                 handler.characters(f"{item['imdbrating']} / 10")
                 handler.endElement('value')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
                 handler.endElement('star-rating')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('txtrating'):
                 handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Editorial'})
                 handler.characters(item['txtrating'])
                 handler.endElement('review')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('rating_cleaned'):
                 handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Detailed Rating'})
                 handler.characters(item['rating_cleaned'])
                 handler.endElement('review')
-                output_stream.write(b'\n    ')
+                output_stream.write(b'\n  ')
 
             if item.get('image_url'):
                 for width, size_attr_value in image_sizes_to_generate.items():
@@ -1896,15 +1897,26 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
                     handler.startElement('image', {'type': 'still', 'size': size_attr_value, 'orient': 'L', 'system': 'tvsp'})
                     handler.characters(processed_image_url)
                     handler.endElement('image')
-                    output_stream.write(b'\n    ')
+                    output_stream.write(b'\n  ')
 
             handler.endElement('programme')
             output_stream.write(b'\n')
 
         handler.endElement('tv')
-        output_stream.write(b'\n')
+
     finally:
         output_stream.close()
+
+    try:
+        with open(output_file, 'r+', encoding='utf-8') as f:
+            content = f.read()
+            cleaned_content = re.sub(r'^\s*</programme>', r'</programme>', content, flags=re.MULTILINE)
+            f.seek(0)
+            f.truncate()
+            f.write(cleaned_content)
+        logger.debug(f"Successfully removed leading spaces before </programme> tags in {output_file}.")
+    except Exception as e:
+        logger.error(f"Error during post-processing to remove leading spaces for </programme> tags in {output_file}: {e}")
 
     logger.info(f"XMLTV file '{output_file}' successfully generated.")
 
