@@ -13,6 +13,7 @@ import concurrent.futures
 import functools
 import json
 import logging
+import logging.handlers
 import lxml.cssselect
 import lxml.html
 import os
@@ -781,6 +782,7 @@ class TvsLeanScraper:
             status_forcelist=RETRY_STATUS_FORCELIST,
             allowed_methods=["GET", "HEAD"],
             raise_on_status=False,
+            respect_retry_after_header=True
         )
         adapter: HTTPAdapter = HTTPAdapter(
             max_retries=retry_strategy,
@@ -793,7 +795,7 @@ class TvsLeanScraper:
 
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
-        logger.debug(f"Main session retry strategy configured: Max retries={max_retries}, Backoff factor={RETRY_BACKOFF_FACTOR}, Retrying on status codes={RETRY_STATUS_FORCELIST}.")
+        logger.debug(f"Main session retry strategy configured: Max retries={max_retries}, Backoff factor={RETRY_BACKOFF_FACTOR}, Retrying on status codes={RETRY_STATUS_FORCELIST}, respecting Retry-After header.")
         logger.debug(f"HTTPAdapter connection pool size set to: {pool_size}")
 
         self.min_request_delay: float = min_request_delay
@@ -1351,6 +1353,66 @@ class TvsLeanScraper:
             return parsed._replace(query=new_query_string).geturl()
         return url
 
+    def _check_image_url_head(self, original_image_url: str, item_id_for_log: str) -> Tuple[str, str]:
+        """
+        Performs a HEAD request to check if an image URL is valid and returns its final URL after redirects.
+
+        :param original_image_url: The original image URL to check.
+        :type original_image_url: str
+        :param item_id_for_log: A unique identifier for logging purposes for the current item.
+        :type item_id_for_log: str
+        :returns: A tuple (final_url, status). 'final_url' is the URL after redirects or original if no redirect/error.
+                  'status' is 'avail' if OK (200), 'not_avail' if 4xx/5xx, 'redirect' if redirect to placeholder, 'error' for others.
+        :rtype: Tuple[str, str]
+        """
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting image check for {item_id_for_log}.")
+            return original_image_url, 'error'
+
+        final_url: str = original_image_url
+        status: str = 'error'
+
+        try:
+            response = self._make_request('head', original_image_url,
+                                          headers={'User-Agent': random.choice(self.user_agents)},
+                                          allow_redirects=True,
+                                          timeout=self.http_timeout,
+                                          log_prefix=f"[Image Check {item_id_for_log}] ")
+
+            if response:
+                final_url = response.url
+                if response.status_code == 200:
+                    status = 'avail'
+                    logger.debug(f"Image {item_id_for_log} is available: {final_url}")
+                elif 400 <= response.status_code < 500:
+                    status = 'not_avail'
+                    logger.warning(f"Image {item_id_for_log} not available (HTTP {response.status_code}): {final_url}")
+                elif 500 <= response.status_code < 600:
+                    status = 'not_avail'
+                    logger.warning(f"Image {item_id_for_log} not available (HTTP {response.status_code}): {final_url}")
+                else:
+                    status = 'error'
+                    logger.warning(f"Image {item_id_for_log} check returned unexpected status {response.status_code}: {final_url}")
+            else:
+                status = 'error'
+                logger.warning(f"Failed HEAD request for image {item_id_for_log}: {original_image_url}")
+
+        except Exception as e:
+            status = 'error'
+            logger.warning(f"Exception during HEAD request for image {item_id_for_log}: {e}. URL: {original_image_url}")
+
+        if status == 'avail' and (
+            'placehold.it' in final_url or
+            'placeholder.com' in final_url or
+            'dummyimage.com' in final_url or
+            'empty.jpg' in final_url.lower() or
+            'noimage' in final_url.lower()
+        ):
+            status = 'redirect'
+            logger.info(f"Image {item_id_for_log} redirected to a generic placeholder: {final_url}")
+
+        return final_url, status
+
     def _process_channel_day_schedule(self, channel_info: Dict[str, str], current_date: datetime.date) -> List[Dict[str, Any]]:
         """
         Fetches and parses a day's schedule for a channel, with retry logic for
@@ -1472,7 +1534,7 @@ class TvsLeanScraper:
                 if item_data['image_check'] != 'avail':
                     item_id_for_log: str = f"{channel_source_id}-{current_date.strftime('%Y%m%d')}-{item_data.get('starttime', 'XX')}-{self.html_parser.re_log_item_id_cleanup.sub('', item_data.get('title', ''))[:10]}"
                     logger.debug(f"Item {item_id_for_log}: Image URL re-check scheduled for: {original_image_url}")
-                    checked_url, status = self._check_image_url_head(original_image_url, original_image_url, item_id_for_log)
+                    checked_url, status = self._check_image_url_head(original_image_url, item_id_for_log)
                     item_data['image_url'] = checked_url
                     item_data['image_check'] = status
                 else:
