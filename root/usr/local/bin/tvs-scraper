@@ -15,8 +15,10 @@ import json
 import logging
 import logging.handlers
 import lxml.cssselect
+import lxml.etree
 import lxml.html
 import os
+import portalocker
 import random
 import re
 import requests
@@ -25,14 +27,12 @@ import sys
 import tempfile
 import threading
 import time
+from argparse import RawTextHelpFormatter
 from datetime import datetime, timedelta, timezone
 from requests.adapters import HTTPAdapter
 from typing import List, Dict, Optional, Any, Tuple
-from urllib3.util.retry import Retry
-from xml.sax.saxutils import XMLGenerator
-from argparse import RawTextHelpFormatter
 from urllib.parse import urlparse, parse_qs
-import portalocker
+from urllib3.util.retry import Retry
 
 if sys.version_info < (3, 9):
     print("Error: This script requires Python 3.9 or higher for the 'zoneinfo' module. Please update your Python version.")
@@ -1824,8 +1824,7 @@ def _build_image_url_with_params(original_url: str, target_width: int, img_crop_
 
 def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_timezone: str = 'Europe/Berlin', img_crop_disable: bool = False) -> None:
     """
-    Generates an XMLTV-compliant XML file from the scraped data
-    using xml.sax.saxutils.XMLGenerator for streaming output.
+    Generates an XMLTV-compliant XML file from the scraped data using lxml.etree.
 
     Applies XML character sanitation to all string content.
 
@@ -1839,7 +1838,7 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
     :param img_crop_disable: If True, disables default image cropping.
     :type img_crop_disable: bool
     """
-    logger.debug(f"Generating XMLTV file: {output_file} using xml.sax.saxutils.XMLGenerator.")
+    logger.debug(f"Generating XMLTV file: {output_file} using lxml.etree.")
 
     channels: Dict[str, Dict[str, str]] = {}
     for item in data_list:
@@ -1852,234 +1851,160 @@ def generate_xmltv(data_list: List[Dict[str, Any]], output_file: str, xmltv_time
         logger.warning("No program data to generate XMLTV. Output file will not be created.")
         return
 
-    output_stream: Any = open(output_file, 'wb')
-    logger.info(f"Writing XMLTV output to file: {output_file}")
-
     try:
-        handler = XMLGenerator(output_stream, encoding='utf-8')
+        target_tz = ZoneInfo(xmltv_timezone)
+    except Exception as e:
+        logger.error(f"Unknown timezone '{xmltv_timezone}' for XMLTV header. Falling back to UTC. Error: {e}")
+        target_tz = timezone.utc
 
-        output_stream.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
-        output_stream.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
+    now_in_target_tz = datetime.now(timezone.utc).astimezone(target_tz)
+    tv_date_str = now_in_target_tz.strftime('%Y%m%d%H%M%S %z').replace(' ', '')
 
-        try:
-            target_tz = ZoneInfo(xmltv_timezone)
-        except Exception as e:
-            logger.error(f"Unknown timezone '{xmltv_timezone}' for XMLTV header. Falling back to UTC. Error: {e}")
-            target_tz = timezone.utc
-
-        now_in_target_tz = datetime.now(timezone.utc).astimezone(target_tz)
-        tv_date_str = now_in_target_tz.strftime('%Y%m%d%H%M%S %z').replace(' ', '')
-
-        handler.startElement('tv', {
-            'date': tv_date_str,
+    tv_element = lxml.etree.Element(
+        'tv',
+        date=tv_date_str,
+        **{
             'source-info-name': _sanitize_xml_string('TVSpielfilm.de') or '',
             'source-info-url': _sanitize_xml_string('https://m.tvspielfilm.de/') or '',
             'generator-info-name': _sanitize_xml_string('TVSpielfilm-Scraper/1.0') or ''
-        })
-        output_stream.write(b'\n')
-
-        for sourceid, channel_info in sorted(channels.items()):
-            robust_channel_id: str = f"{sourceid.lower()}.tvs"
-            handler.startElement('channel', {'id': robust_channel_id})
-            output_stream.write(b'\n  ')
-            handler.startElement('display-name', {})
-            handler.characters(channel_info['name'])
-            handler.endElement('display-name')
-            output_stream.write(b'\n')
-            handler.endElement('channel')
-            output_stream.write(b'\n')
-
-        image_sizes_to_generate = {
-            150: '1',
-            300: '2',
-            600: '3'
         }
+    )
 
-        for item in data_list:
-            start_time_xmltv: Optional[str] = item.get('starttime_xmltv')
-            stop_time_xmltv: Optional[str] = item.get('endtime_xmltv')
+    for sourceid, channel_info in sorted(channels.items()):
+        robust_channel_id: str = f"{sourceid.lower()}.tvs"
+        channel_elem = lxml.etree.SubElement(tv_element, 'channel', id=robust_channel_id)
+        display_name_elem = lxml.etree.SubElement(channel_elem, 'display-name')
+        display_name_elem.text = channel_info['name']
 
-            if not start_time_xmltv or not item.get('sourceid') or not item.get('title'):
-                logger.warning(f"Skipping program due to missing essential data: {item.get('title', 'N/A')} on {item.get('channelname', 'N/A')}")
-                continue
+    image_sizes_to_generate = {
+        150: '1',
+        300: '2',
+        600: '3'
+    }
 
-            robust_channel_id = f"{item['sourceid'].lower()}.tvs"
-            programme_attrib: Dict[str, str] = {
-                'start': start_time_xmltv,
-                'channel': robust_channel_id
-            }
-            if stop_time_xmltv:
-                programme_attrib['stop'] = stop_time_xmltv
+    for item in data_list:
+        start_time_xmltv: Optional[str] = item.get('starttime_xmltv')
+        stop_time_xmltv: Optional[str] = item.get('endtime_xmltv')
 
-            handler.startElement('programme', programme_attrib)
-            output_stream.write(b'\n  ')
+        if not start_time_xmltv or not item.get('sourceid') or not item.get('title'):
+            logger.warning(f"Skipping program due to missing essential data: {item.get('title', 'N/A')} on {item.get('channelname', 'N/A')}")
+            continue
 
-            handler.startElement('title', {})
-            handler.characters(item['title'])
-            handler.endElement('title')
-            output_stream.write(b'\n  ')
+        robust_channel_id = f"{item['sourceid'].lower()}.tvs"
+        programme_attrib: Dict[str, str] = {
+            'start': start_time_xmltv,
+            'channel': robust_channel_id
+        }
+        if stop_time_xmltv:
+            programme_attrib['stop'] = stop_time_xmltv
 
-            full_description: List[str] = []
-            if item.get('shortdescription'):
-                full_description.append(item['shortdescription'])
-            if item.get('longdescription'):
-                full_description.append(item['longdescription'])
-            if full_description:
-                handler.startElement('desc', {})
-                handler.characters('\n'.join(full_description))
-                handler.endElement('desc')
-                output_stream.write(b'\n  ')
+        programme_elem = lxml.etree.SubElement(tv_element, 'programme', **programme_attrib)
 
-            if item.get('director') or item.get('cast') or item.get('screenplay'):
-                handler.startElement('credits', {})
-                output_stream.write(b'\n    ')
-                if item.get('director'):
-                    handler.startElement('director', {})
-                    handler.characters(item['director'])
-                    handler.endElement('director')
-                    output_stream.write(b'\n    ')
+        title_elem = lxml.etree.SubElement(programme_elem, 'title')
+        title_elem.text = item['title']
 
-                if item.get('cast'):
-                    cast_entries: List[str] = [c.strip() for c in item['cast'].split(',') if c.strip()]
-                    for entry in cast_entries:
-                        match: Optional[re.Match[str]] = re_cast_entry_match.match(entry)
-                        if match:
-                            actor_name: str = match.group(1).strip()
-                            actor_role: str = match.group(2).strip()
-                            handler.startElement('actor', {'role': actor_role})
-                            handler.characters(actor_name)
-                            handler.endElement('actor')
-                        else:
-                            handler.startElement('actor', {})
-                            handler.characters(entry)
-                            handler.endElement('actor')
-                        output_stream.write(b'\n    ')
+        full_description_parts: List[str] = []
+        if item.get('shortdescription'):
+            full_description_parts.append(item['shortdescription'])
+        if item.get('longdescription'):
+            full_description_parts.append(item['longdescription'])
+        if full_description_parts:
+            desc_elem = lxml.etree.SubElement(programme_elem, 'desc')
+            desc_elem.text = '\n'.join(full_description_parts)
 
-                if item.get('screenplay'):
-                    writers: List[str] = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
-                    for writer in writers:
-                        handler.startElement('writer', {})
-                        handler.characters(writer)
-                        handler.endElement('writer')
-                        output_stream.write(b'\n    ')
+        if item.get('director') or item.get('cast') or item.get('screenplay'):
+            credits_elem = lxml.etree.SubElement(programme_elem, 'credits')
+            if item.get('director'):
+                director_elem = lxml.etree.SubElement(credits_elem, 'director')
+                director_elem.text = item['director']
 
-                output_stream.write(b'  ')
-                handler.endElement('credits')
-                output_stream.write(b'\n  ')
+            if item.get('cast'):
+                cast_entries: List[str] = [c.strip() for c in item['cast'].split(',') if c.strip()]
+                for entry in cast_entries:
+                    match: Optional[re.Match[str]] = re_cast_entry_match.match(entry)
+                    if match:
+                        actor_name: str = match.group(1).strip()
+                        actor_role: str = match.group(2).strip()
+                        actor_elem = lxml.etree.SubElement(credits_elem, 'actor', role=actor_role)
+                        actor_elem.text = actor_name
+                    else:
+                        actor_elem = lxml.etree.SubElement(credits_elem, 'actor')
+                        actor_elem.text = entry
 
-            if item.get('year'):
-                handler.startElement('date', {})
-                handler.characters(str(item['year']))
-                handler.endElement('date')
-                output_stream.write(b'\n  ')
+            if item.get('screenplay'):
+                writers: List[str] = [w.strip() for w in item['screenplay'].split(',') if w.strip()]
+                for writer in writers:
+                    writer_elem = lxml.etree.SubElement(credits_elem, 'writer')
+                    writer_elem.text = writer
 
-            if item.get('genre'):
-                categories: List[str] = [c.strip() for c in item['genre'].split(',') if c.strip()]
-                for category in categories:
-                    handler.startElement('category', {})
-                    handler.characters(category)
-                    handler.endElement('category')
-                    output_stream.write(b'\n  ')
+        if item.get('year'):
+            date_elem = lxml.etree.SubElement(programme_elem, 'date')
+            date_elem.text = str(item['year'])
 
-            if item.get('keyword'):
-                handler.startElement('keyword', {})
-                handler.characters(item['keyword'])
-                handler.endElement('keyword')
-                output_stream.write(b'\n  ')
+        if item.get('genre'):
+            categories: List[str] = [c.strip() for c in item['genre'].split(',') if c.strip()]
+            for category in categories:
+                category_elem = lxml.etree.SubElement(programme_elem, 'category')
+                category_elem.text = category
 
-            if item.get('duration') is not None:
-                length_minutes: int = round(item['duration'] / 60)
-                handler.startElement('length', {'units': 'minutes'})
-                handler.characters(str(length_minutes))
-                handler.endElement('length')
-                output_stream.write(b'\n  ')
+        if item.get('keyword'):
+            keyword_elem = lxml.etree.SubElement(programme_elem, 'keyword')
+            keyword_elem.text = item['keyword']
 
-            if item.get('link'):
-                handler.startElement('url', {})
-                handler.characters(item['link'])
-                handler.endElement('url')
-                output_stream.write(b'\n  ')
+        if item.get('duration') is not None:
+            length_minutes: int = round(item['duration'] / 60)
+            length_elem = lxml.etree.SubElement(programme_elem, 'length', units='minutes')
+            length_elem.text = str(length_minutes)
 
-            if item.get('country'):
-                handler.startElement('country', {})
-                handler.characters(item['country'])
-                handler.endElement('country')
-                output_stream.write(b'\n  ')
+        if item.get('link'):
+            url_elem = lxml.etree.SubElement(programme_elem, 'url')
+            url_elem.text = item['link']
 
-            if item.get('parentalrating') is not None:
-                handler.startElement('rating', {'system': 'FSK'})
-                output_stream.write(b'\n    ')
-                handler.startElement('value', {})
-                handler.characters(str(item['parentalrating']))
-                handler.endElement('value')
-                output_stream.write(b'\n  ')
-                handler.endElement('rating')
-                output_stream.write(b'\n  ')
+        if item.get('country'):
+            country_elem = lxml.etree.SubElement(programme_elem, 'country')
+            country_elem.text = item['country']
 
-            if item.get('numrating') is not None:
-                handler.startElement('star-rating', {'system': 'TVSpielfilm'})
-                output_stream.write(b'\n    ')
-                handler.startElement('value', {})
-                handler.characters(f"{item['numrating']} / 3")
-                handler.endElement('value')
-                output_stream.write(b'\n  ')
-                handler.endElement('star-rating')
-                output_stream.write(b'\n  ')
+        if item.get('parentalrating') is not None:
+            rating_elem = lxml.etree.SubElement(programme_elem, 'rating', system='FSK')
+            value_elem = lxml.etree.SubElement(rating_elem, 'value')
+            value_elem.text = str(item['parentalrating'])
 
-            if item.get('imdbrating'):
-                handler.startElement('star-rating', {'system': 'IMDB'})
-                output_stream.write(b'\n    ')
-                handler.startElement('value', {})
-                handler.characters(f"{item['imdbrating']} / 10")
-                handler.endElement('value')
-                output_stream.write(b'\n  ')
-                handler.endElement('star-rating')
-                output_stream.write(b'\n  ')
+        if item.get('numrating') is not None:
+            star_rating_elem = lxml.etree.SubElement(programme_elem, 'star-rating', system='TVSpielfilm')
+            value_elem = lxml.etree.SubElement(star_rating_elem, 'value')
+            value_elem.text = f"{item['numrating']} / 3"
 
-            if item.get('txtrating'):
-                handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Editorial'})
-                handler.characters(item['txtrating'])
-                handler.endElement('review')
-                output_stream.write(b'\n  ')
+        if item.get('imdbrating'):
+            imdb_star_rating_elem = lxml.etree.SubElement(programme_elem, 'star-rating', system='IMDB')
+            value_elem = lxml.etree.SubElement(imdb_star_rating_elem, 'value')
+            value_elem.text = f"{item['imdbrating']} / 10"
 
-            if item.get('rating_cleaned'):
-                handler.startElement('review', {'type': 'text', 'source': 'TVSpielfilm Detailed Rating'})
-                handler.characters(item['rating_cleaned'])
-                handler.endElement('review')
-                output_stream.write(b'\n  ')
+        if item.get('txtrating'):
+            review_elem = lxml.etree.SubElement(programme_elem, 'review', type='text', source='TVSpielfilm Editorial')
+            review_elem.text = item['txtrating']
 
-            if item.get('image_url'):
-                for width, size_attr_value in image_sizes_to_generate.items():
-                    processed_image_url = _build_image_url_with_params(
-                        item['image_url'],
-                        width,
-                        img_crop_disable
-                    )
-                    handler.startElement('image', {'type': 'still', 'size': size_attr_value, 'orient': 'L', 'system': 'tvsp'})
-                    handler.characters(processed_image_url)
-                    handler.endElement('image')
-                    output_stream.write(b'\n  ')
+        if item.get('rating_cleaned'):
+            review_detailed_elem = lxml.etree.SubElement(programme_elem, 'review', type='text', source='TVSpielfilm Detailed Rating')
+            review_detailed_elem.text = item['rating_cleaned']
 
-            handler.endElement('programme')
-            output_stream.write(b'\n')
-
-        handler.endElement('tv')
-
-    finally:
-        output_stream.close()
+        if item.get('image_url'):
+            for width, size_attr_value in image_sizes_to_generate.items():
+                processed_image_url = _build_image_url_with_params(
+                    item['image_url'],
+                    width,
+                    img_crop_disable
+                )
+                image_elem = lxml.etree.SubElement(programme_elem, 'image', type='still', size=size_attr_value, orient='L', system='tvsp')
+                image_elem.text = processed_image_url
+    
+    tree = lxml.etree.ElementTree(tv_element)
 
     try:
-        with open(output_file, 'r+', encoding='utf-8') as f:
-            content = f.read()
-            cleaned_content = re.sub(r'^\s*</programme>', r'</programme>', content, flags=re.MULTILINE)
-            f.seek(0)
-            f.truncate()
-            f.write(cleaned_content)
-        logger.debug(f"Successfully removed leading spaces before </programme> tags in {output_file}.")
+        tree.write(output_file, pretty_print=True, encoding='utf-8', xml_declaration=True, doctype='<!DOCTYPE tv SYSTEM "xmltv.dtd">')
+        logger.info(f"XMLTV file '{output_file}' successfully generated.")
     except Exception as e:
-        logger.error(f"Error during post-processing to remove leading spaces for </programme> tags in {output_file}: {e}")
-
-    logger.info(f"XMLTV file '{output_file}' successfully generated.")
+        logger.error(f"Error generating XMLTV file with lxml.etree: {e}")
+        raise
 
 
 if __name__ == '__main__':
