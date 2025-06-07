@@ -28,17 +28,17 @@ This Python-based scraper is designed to extract EPG (Electronic Program Guide) 
 
 ### Dependencies
 
-The scraper primarily uses `lxml` for efficient HTML parsing and `cssselect` for CSS selector support. It requires the following Python libraries:
+The scraper primarily uses `lxml` for efficient HTML parsing and `cssselect` for CSS selector support. For file access with locks, `portalocker` is used. Timezone information is handled via the standard `zoneinfo` module (available from Python 3.9+). It requires the following Python libraries:
 
 * `requests`
 * `lxml`
 * `cssselect`
-* `zlib` (for CRC32 hash comparison in caching)
+* `portalocker`
 
 You can install these using pip:
 
 ```bash
-pip install requests lxml cssselect
+pip install requests lxml cssselect portalocker
 ```
 
 ### Make Executable
@@ -62,21 +62,19 @@ During the **first run** of the scraper, especially when scraping many channels 
 **After the first run**, subsequent scraper runs will generally be **significantly faster**. The scraper stores fetched HTML responses and processed JSON data on disk. For repeated requests to the same URLs or data, information will be loaded from the cache instead of being downloaded or re-processed, which significantly reduces the time.
 
 **Cache Consistency Check:**
-By default, the scraper uses a robust cache consistency check based on `Content-Length` and `CRC32` hashes of content samples from the server. This ensures that cached data is only used if the remote content hasn't changed. A simpler `ETag`/`Last-Modified` based conditional GET can be enabled with `--cache-simple`.
+By default, the scraper uses a robust cache consistency check based on `Content-Length` (as a fallback when a 304 status is not received) and ETag/Last-Modified headers. This ensures that cached data is only used if the remote content hasn't significantly changed.
 
 **Proactive Cache Cleanup:**
-The scraper now performs proactive cache cleanup to automatically remove stale or no longer relevant cache files (e.g., for past days or data too far in the future). This helps manage cache size and optimize performance. By default, cache files for past days are deleted; this behavior can be disabled with `--cache-keep`.
+The scraper performs proactive cache cleanup to automatically remove stale or no longer relevant cache files (e.g., for past days or data too far in the future). This helps manage cache size and optimize performance. By default, cache files for past days are deleted; this behavior can be disabled with `--cache-keep`.
 
 **Potential Slowdowns due to Cache:**
 In certain scenarios, using the cache can, however, lead to **considerable slowdowns**. This can happen if:
-
-* The cache becomes very large (several gigabytes), which slows down read and write operations on the disk.
 
 * The cache storage location (e.g., a slow network drive) is not optimal.
 
 * Many cache entries have expired, and revalidation with the server takes place, which can lead to many live requests despite the cache.
 
-Please note that the cache, depending on the number of channels and days scraped, **can become very large**. Ensure that sufficient disk space is available on the drive where the cache is stored. You can clear the cache at any time using the `--cache-clear` option.
+Ensure that sufficient disk space is available on the drive where the cache is stored. You can clear the cache at any time using the `--cache-clear` option.
 
 ## Usage
 
@@ -104,9 +102,13 @@ The scraper is controlled via the command line with various arguments.
 
 * `--output-format <FORMAT>`: Output format: `"xmltv"` or `"json"`. Default: `xmltv`.
 
-* `--img-size <SIZE>`: Image size to extract (`"300"` or `"600"`). Default: `600`.
+* `--xmltv-timezone <TIMEZONE>`: Specifies the timezone to use for XMLTV output (e.g., `"Europe/Berlin"`, `"America/New_York"`). This affects the timestamps in the XMLTV file. Default: `"Europe/Berlin"`.
 
-* `--check-img`: If set, performs an additional HEAD request to check if image URLs are valid. Increases scraping time.
+* `--img-size <SIZE>`: Image size to extract (`"150"`, `"300"` or `"600"`). Default: `600`.
+
+* `--img-check`: If set, performs an additional HEAD request to check if image URLs are valid. Increases scraping time.
+
+* `--img-crop-disable`: If set, disables the default 16:9 image cropping for images without existing crop instructions.
 
 * `--log-level <LEVEL>`: Sets the logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Default: `WARNING`.
 
@@ -124,17 +126,19 @@ The scraper is controlled via the command line with various arguments.
 
 * `--cache-ttl <SECONDS>`: Cache Time To Live in seconds. This defines how long a processed JSON file is considered "fresh" and used directly without re-scraping HTML. Default: `6` hours (`21600` seconds).
 
-* `--cache-simple`: If set, enables a simpler conditional GET (using ETag, Last-Modified, and 304 status) for cache consistency. By default, the Content-Length and Range-Request CRC32 comparison method is used.
+* `--cache-validation-tolerance <BYTES>`: Tolerance in bytes for content-length comparison when ETag/Last-Modified fails to return 304. Default: `5` bytes.
 
 * `--cache-keep`: If set, cache files for past days will NOT be automatically deleted. By default, past days' cache files are deleted.
 
-* `--max-workers <NUMBER>`: Maximum number of concurrent workers for data fetching. Default: `10`.
+* `--max-workers <NUMBER>`: Maximum number of concurrent workers for data fetching. Default: `[Number of CPU cores] * 5` (e.g., 40 for 8 cores).
 
 * `--max-retries <NUMBER>`: Maximum number of retry attempts for failed HTTP requests (e.g., 429, 5xx, connection errors). Default: `5`.
 
 * `--min-request-delay <SECONDS>`: Minimum delay in seconds between HTTP requests (only for live fetches). Default: `0.05`s.
 
 * `--max-schedule-retries <NUMBER>`: Maximum number of retry attempts for application-level errors during schedule parsing/generation. Default: `3`.
+
+* `--timeout-http <SECONDS>`: Timeout in seconds for all HTTP requests (GET, HEAD). Default: `10`s.
 
 ### Examples
 
@@ -183,14 +187,18 @@ The `max-workers` setting directly influences the server load on the `m.tvspielf
 3.  **Adjust parameters:**
     * If you receive errors like 429, increase the `min-request-delay` or reduce `max-workers`.
     * If the scraper runs stably and no issues occur, you can gradually increase `max-workers` or slightly decrease `min-request-delay`, but always with caution.
-4.  **Observe `robots.txt`:** Although `m.tvspielfilm.de/robots.txt` does not contain a specific `Crawl-delay` directive, it specifies disallowed paths and explicitly excludes certain bots. Adhere to these rules.
+4.  **Observe `robots.txt`:** Although `m.tvspielfilm.de/robots.txt` does not contain a specific `Crawl-delay`-directive, it specifies disallowed paths and explicitly excludes certain bots. Adhere to these rules.
 5.  **Utilize caching:** Enabled caching significantly reduces the number of live requests, minimizing server load.
 
-For `m.tvspielfilm.de`, a larger media site, a value of **5 to 10 `max-workers` in combination with a `--min-request-delay` of at least 0.5 seconds** is a fair and appropriate starting point. The default value for `max-workers` is `10`, which provides a good starting point.
+For `m.tvspielfilm.de`, a larger media site, a value of **5 to 10 `max-workers` in combination with a `--min-request-delay` of at least 0.5 seconds** is a fair and appropriate starting point. The default value for `max-workers` is dynamic based on the CPU count and may be higher than 10, but the general recommendation remains valid.
 
 ## Integration with `epgd` (or similar systems)
 
 The scraper is designed to work with the `epgd` daemon, which typically uses a `channelmap.conf` and an `epgd.conf`. **Note that for integration with `epgd`, the [xmltv-plugin](https://github.com/Zabrimus/epgd-plugin-xmltv) must be installed and activated on your system.**
+
+**Important Note on XMLTV Plugin and XSLT:**
+The default `xmltv.xsl` (provided by [xmltv-Plugin](https://github.com/Zabrimus/epgd-plugin-xmltv/tree/master/configs)) may not be designed to correctly process all fields extracted by this scraper (e.g., subtitles, detailed cast/crew, special ratings like IMDb or TVSpielfilm's "Tipp", image URLs).
+It might be necessary to use a **modified `xmltv.xsl` file** or customize your own to fully visualize and present this additional information. Customizing the XSLT is also required to properly handle the different image sizes (`size="1"`, `size="2"`, `size="3"`) provided by the scraper.
 
 ### `channelmap.conf`
 
@@ -239,12 +247,6 @@ The provided `run-scraper` script automates the invocation of the Python scraper
 
 ## Troubleshooting
 
-* **`EOFError: Ran out of input` or `sqlite3.InterfaceError: bad parameter or other API misuse`:** These errors indicate a corrupted cache entry. Run the scraper with the `--cache-clear` option to clear the cache and re-fetch the data.
-
-  ```bash
-  ./tvs-scraper --cache-clear [additional options]
-  ```
-
 * **No data extracted / Empty output file:**
 
   * Check your `--log-level` (use `INFO` or `DEBUG` for more detailed output).
@@ -267,20 +269,18 @@ The scraper is written in Python and uses `requests` for HTTP requests and `lxml
 
 * **`TvsLeanScraper` Class:** Encapsulates all scraping logic.
 
-* **`fetch_url` Method:** Responsible for fetching URLs and HTTP-level error handling. It now uses `functools.lru_cache` for in-memory caching and implements a custom file-based caching mechanism with content consistency checks, including `Content-Length` and `Range-Request` CRC32 hash comparison, as well as optional ETag/Last-Modified.
+* **`fetch_url` Method:** Responsible for fetching URLs and HTTP-level error handling. It uses `functools.lru_cache` for in-memory caching of HTTP responses and implements a custom file-based caching mechanism with content consistency checks, including `Content-Length` (as a fallback when a 304 status is not received), as well as ETag/Last-Modified.
 
-* **`_get_channel_list` Method:** Extracts the list of channels and integrates with the file-based cache for channel list data.
+* **`_get_channel_list` Methode:** Extrahiert die Liste der Kanäle und integriert sich mit dem dateibasierten Cache für Kanallistendaten.
 
-* **`_get_schedule_for_channel_and_date` Method:** Extracts program information for a specific channel and day, integrating with the file-based cache for daily schedule data.
+* **`_get_schedule_for_channel_and_date` Methode:** Extrahiert Programminformationen für einen bestimmten Kanal und Tag und integriert sich mit dem dateibasierten Cache für tägliche Sendeplandaten.
 
-* **`parse_detail_page` Method:** Extracts additional details from program detail pages, utilizing `functools.lru_cache` for in-memory caching of detail page content.
+* **`parse_program_details` Methode:** Extrahiert zusätzliche Details von den Programm-Detailseiten. Die HTML-Inhalte für Detailseiten profitieren vom In-Memory-Caching der HTTP-Antworten.
 
-* **`_process_channel_day_schedule` Method:** A helper method that orchestrates fetching and parsing for a day and channel, including application-specific retry logic and interaction with the file-based cache.
+* **`_process_channel_day_schedule` Methode:** Eine Hilfsmethode, die den Abruf und das Parsen für einen Tag und Kanal orchestriert, einschließlich der anwendungsspezifischen Retry-Logik und der Interaktion mit dem dateibasierten Cache.
 
-* **`_proactive_cache_cleanup` Method:** A new method for proactively cleaning up stale or no longer relevant cache files for all channels and dates.
+* **`_proactive_cache_cleanup` Methode:** Eine Methode zur proaktiven Bereinigung veralteter oder nicht mehr relevanter Cache-Dateien für alle Kanäle und Daten, einschließlich des Entfernens leerer Kanal-Unterverzeichnisse.
 
-* **`_cleanup_empty_cache_dirs` Method:** A new method for removing empty channel subdirectories within the cache.
+* **`generate_xmltv` Funktion:** Erstellt die XMLTV-Ausgabedatei.
 
-* **`generate_xmltv` Function:** Creates the XMLTV output file.
-
-If changes occur on the TVSpielfilm.de website, the CSS selectors in the `TvsLeanScraper` class may need to be updated to find the correct elements.
+Bei Änderungen an der TVSpielfilm.de-Webseite müssen möglicherweise die CSS-Selektoren in der `TvsHtmlParser`-Klasse aktualisiert werden, um die korrekten Elemente zu finden.
