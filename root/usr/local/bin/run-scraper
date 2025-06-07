@@ -13,10 +13,14 @@ SYSLOG_BASH_TAG="${SYSLOG_BASH_TAG:-scraper}"
 USE_SYSLOG_BASH="${USE_SYSLOG_BASH:-true}"
 
 # Joins array elements with a separator
-join () {
-  local IFS="$1"
-  shift
-  printf "%s\n" "$*"
+join() {
+	local IFS="$1"
+	shift
+	printf "%s" "$1"
+	shift
+	for arg in "$@"; do
+		printf "%s%s" "$IFS" "$arg"
+	done
 }
 
 # Function to print messages, optionally to syslog
@@ -80,8 +84,8 @@ log_message "Using output file: %s" "$outFile"
 output_dir=$(dirname "${outFile}")
 
 if [ ! -d "$output_dir" ]; then
-	log_message "Error: Output directory '%s' does not exist." "$output_dir" >&2
-	exit 1
+	log_message "Warning: Output directory '%s' does not exist and is being created." "$output_dir" >&2
+	mkdir -p "$cacheDir"
 elif [ ! -w "$output_dir" ]; then
 	log_message "Error: Output directory '%s' is not writable." "$output_dir" >&2
 	exit 1
@@ -95,7 +99,7 @@ fi
 
 # Check if cache directory exists and is writable
 if [ ! -d "$cacheDir" ]; then
-	log_message "Error: The cache directory '%s' does not exist and is being created." "$cacheDir" >&2
+	log_message "Warning: The cache directory '%s' does not exist and is being created." "$cacheDir" >&2
 	mkdir -p "$cacheDir"
 fi
 if [ ! -w "$cacheDir" ]; then
