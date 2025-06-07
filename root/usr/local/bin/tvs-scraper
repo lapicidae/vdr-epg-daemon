@@ -238,15 +238,14 @@ class TvsHtmlParser:
             if href:
                 source_id_match: Optional[re.Match[str]] = self.re_source_id_html.search(href)
                 if source_id_match:
-                    source_id = source_id_match.group(1).upper()
-
+                    source_id = source_id_match.group(1).lower()
             if not source_id:
                 tracking_data_str: Optional[str] = link.get('data-tracking-point')
                 if tracking_data_str:
                     try:
                         tracking_data: Dict[str, Any] = json.loads(tracking_data_str)
                         if 'channel' in tracking_data:
-                            source_id = str(tracking_data['channel']).upper()
+                            source_id = str(tracking_data['channel']).lower()
                     except json.JSONDecodeError:
                         logger.debug(f"Could not parse data-tracking-point for {name}: {tracking_data_str}")
 
@@ -774,7 +773,7 @@ class TvsLeanScraper:
         :type img_size: Optional[str]
         :param check_img: Boolean to enable/disable image URL validity checks.
         :type check_img: Optional[bool]
-        :param start_date_str: Specific date to scrape in YYYYMMDD format.
+        :param start_date_str: Specific date to scrape inYYYYMMDD format.
         :type start_date_str: Optional[str]
         :param cache_dir_path: Custom directory for cache files.
         :type cache_dir_path: Optional[str]
@@ -813,7 +812,7 @@ class TvsLeanScraper:
                 with open(channel_ids_file, 'r', encoding='utf-8') as f:
                     file_content: str = f.read().strip()
                 if file_content:
-                    self.target_sourceids = {cid.strip().upper() for cid in file_content.split(',') if cid.strip()}
+                    self.target_sourceids = {cid.strip().lower() for cid in file_content.split(',') if cid.strip()}
                     logger.info(f"Target channels from file '{channel_ids_file}': {self.target_sourceids}")
                 else:
                     logger.warning(f"Channel IDs file '{channel_ids_file}' is empty. All found channels will be crawled.")
@@ -823,7 +822,7 @@ class TvsLeanScraper:
                 logger.error(f"Error reading channel IDs from file '{channel_ids_file}': {e}. All found channels will be crawled.")
         elif channel_ids:
             if isinstance(channel_ids, str):
-                self.target_sourceids = {cid.strip().upper() for cid in channel_ids.split(',') if cid.strip()}
+                self.target_sourceids = {cid.strip().lower() for cid in channel_ids.split(',') if cid.strip()}
                 logger.info(f"Target channels from argument: {self.target_sourceids}")
             else:
                 logger.warning(f"Invalid ID type for channel_ids: {type(channel_ids)}. Expected string. Crawling all found channels.")
@@ -946,135 +945,10 @@ class TvsLeanScraper:
         date_str: str = current_date.strftime('%Y-%m-%d')
         return f"{channel_url}?date={date_str}"
 
-    @functools.lru_cache(maxsize=256)
-    def _make_request_cached_wrapper(self, method: str, url: str, headers_tuple: Tuple[Tuple[str, str], ...], allow_redirects: bool, timeout: int) -> Optional[requests.Response]:
+    def _execute_http_request(self, method: str, url: str, headers: Dict[str, str], allow_redirects: bool, timeout: int) -> Optional[requests.Response]:
         """
-        A cached wrapper for _make_request. This method is decorated with lru_cache.
-        Headers are passed as a hashable tuple of tuples.
-
-        :param method: HTTP method ('get' or 'head').
-        :type method: str
-        :param url: The URL to fetch.
-        :type url: str
-        :param headers_tuple: Tuple of (header_name, header_value) tuples for headers.
-        :type headers_tuple: Tuple[Tuple[str, str], ...]
-        :param allow_redirects: Whether to follow HTTP redirects.
-        :type allow_redirects: bool
-        :param timeout: Request timeout in seconds.
-        :type timeout: int
-        :returns: The requests.Response object on success, None on failure.
-        :rtype: Optional[requests.Response]
-        """
-        headers = dict(headers_tuple)
-
-        if self.stop_event.is_set():
-            logger.debug(f"Stop event set. Aborting {method.upper()} for {url}.")
-            return None
-
-        parsed_url = urlparse(url)
-        if not all([parsed_url.scheme, parsed_url.netloc]) or parsed_url.scheme not in ("http", "https"):
-            logger.warning(f"Invalid or unsupported URL scheme: {url}. Skipping request.")
-            return None
-
-        try:
-            if method == 'get':
-                response: requests.Response = self.session.get(url, headers=headers, allow_redirects=allow_redirects, timeout=timeout)
-            elif method == 'head':
-                response: requests.Response = self.session.head(url, headers=headers, allow_redirects=allow_redirects, timeout=timeout)
-            else:
-                logger.error(f"Unsupported HTTP method: {method}")
-                return None
-
-            if self.stop_event.is_set():
-                logger.debug(f"Stop event set during {method.upper()} for {url}.")
-                return None
-
-            time.sleep(random.uniform(self.min_request_delay, self.min_request_delay + 0.2))
-
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed for {url} ({method.upper()}): {e}")
-            return None
-
-    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, allow_redirects: bool = True) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
-        """
-        Sends an HTTP GET request to the given URL using the configured session.
-        Handles HTTP status codes, timeouts, and retries. Applies a delay only for
-        live (non-cached) requests to be polite. Implements Conditional GET using ETag and Last-Modified headers.
-        If a 304 Not Modified is not received, it checks content-length with a tolerance.
-
-        :param url: The URL to fetch.
-        :type url: str
-        :param etag: The ETag from a previous response, for conditional GET.
-        :type etag: Optional[str]
-        :param last_modified: The Last-Modified header from a previous response, for conditional GET.
-        :type last_modified: Optional[str]
-        :param cached_content_length: The Content-Length from the last cached response.
-        :type cached_content_length: Optional[int]
-        :param allow_redirects: Whether to follow HTTP redirects. Defaults to True.
-        :type allow_redirects: bool
-        :returns: A tuple (response_content, new_etag, new_last_modified, fetched_content_length).
-                  response_content is None if 304 Not Modified or if content is semantically identical within tolerance.
-                  fetched_content_length is for the *newly fetched* content.
-                  Returns (None, None, None, None) if request fails.
-        :rtype: Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]
-        """
-        if self.stop_event.is_set():
-            logger.debug(f"Stop event set. Aborting fetch for {url}.")
-            return None, None, None, None
-
-        headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
-
-        if self.cache_clear_requested:
-            logger.debug(f"Performing full GET for {url} (explicit --cache-clear requested).")
-            response = self._make_request_uncached_internal('get', url, headers, allow_redirects, self.http_timeout)
-            if response is None:
-                return None, None, None, None
-
-            new_etag: Optional[str] = response.headers.get('ETag')
-            new_last_modified: Optional[str] = response.headers.get('Last-Modified')
-            fetched_content_length: int = len(response.content)
-
-            logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}, Content-Length: {fetched_content_length}")
-            return response.text, new_etag, new_last_modified, fetched_content_length
-
-        if etag:
-            headers['If-None-Match'] = etag
-        if last_modified:
-            headers['If-Modified-Since'] = last_modified
-
-        headers_tuple = tuple(sorted(headers.items()))
-        response = self._make_request_cached_wrapper('get', url, headers_tuple, allow_redirects, self.http_timeout)
-
-        if response is None:
-            return None, None, None, None
-
-        new_etag: Optional[str] = response.headers.get('ETag')
-        new_last_modified: Optional[str] = response.headers.get('Last-Modified')
-        fetched_content_length: int = len(response.content)
-
-        if response.status_code == 304:
-            logger.debug(f"Resource {url} not modified (304). Using cached data.")
-            return None, etag, last_modified, cached_content_length
-
-        if cached_content_length is not None and \
-           abs(fetched_content_length - cached_content_length) <= self.cache_validation_tolerance:
-            logger.debug(f"Resource {url} content length is within tolerance ({self.cache_validation_tolerance} bytes). "
-                         f"Fetched: {fetched_content_length}, Cached: {cached_content_length}. Using cached data.")
-            return None, new_etag, new_last_modified, fetched_content_length
-        else:
-            if cached_content_length is not None:
-                logger.debug(f"Resource {url} content length differs beyond tolerance. "
-                             f"Fetched: {fetched_content_length}, Cached: {cached_content_length}, Tolerance: {self.cache_validation_tolerance}. Fetching new content.")
-            else:
-                logger.debug(f"No cached content length for {url} or conditional GET failed. Fetching new content.")
-            return response.text, new_etag, new_last_modified, fetched_content_length
-
-    def _make_request_uncached_internal(self, method: str, url: str, headers: Dict[str, str], allow_redirects: bool, timeout: int) -> Optional[requests.Response]:
-        """
-        Internal function to make HTTP requests without caching and handle RequestExceptions.
-        Used when lru_cache needs to be explicitly bypassed.
+        Internal function to make HTTP requests and handle RequestExceptions.
+        Contains common logic for stop event checks, URL validation, and request execution.
 
         :param method: HTTP method ('get' or 'head').
         :type method: str
@@ -1119,6 +993,174 @@ class TvsLeanScraper:
             logger.error(f"Request failed for {url} ({method.upper()}): {e}")
             return None
 
+    @functools.lru_cache(maxsize=256)
+    def _make_request_cached_wrapper(self, method: str, url: str, headers_tuple: Tuple[Tuple[str, str], ...], allow_redirects: bool, timeout: int) -> Optional[requests.Response]:
+        """
+        A cached wrapper for _execute_http_request. This method is decorated with lru_cache.
+        Headers are passed as a hashable tuple of tuples.
+
+        :param method: HTTP method ('get' or 'head').
+        :type method: str
+        :param url: The URL to fetch.
+        :type url: str
+        :param headers_tuple: Tuple of (header_name, header_value) tuples for headers.
+        :type headers_tuple: Tuple[Tuple[str, str], ...]
+        :param allow_redirects: Whether to follow HTTP redirects.
+        :type allow_redirects: bool
+        :param timeout: Request timeout in seconds.
+        :type timeout: int
+        :returns: The requests.Response object on success, None on failure.
+        :rtype: Optional[requests.Response]
+        """
+        headers = dict(headers_tuple)
+        return self._execute_http_request(method, url, headers, allow_redirects, timeout)
+
+    def fetch_url(self, url: str, etag: Optional[str] = None, last_modified: Optional[str] = None, cached_content_length: Optional[int] = None, allow_redirects: bool = True) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
+        """
+        Sends an HTTP GET request to the given URL using the configured session.
+        Handles HTTP status codes, timeouts, and retries. Applies a delay only for
+        live (non-cached) requests to be polite. Implements Conditional GET using ETag and Last-Modified headers.
+        If a 304 Not Modified is not received, it checks content-length with a tolerance.
+
+        :param url: The URL to fetch.
+        :type url: str
+        :param etag: The ETag from a previous response, for conditional GET.
+        :type etag: Optional[str]
+        :param last_modified: The Last-Modified header from a previous response, for conditional GET.
+        :type last_modified: Optional[str]
+        :param cached_content_length: The Content-Length from the last cached response.
+        :type cached_content_length: Optional[int]
+        :param allow_redirects: Whether to follow HTTP redirects. Defaults to True.
+        :type allow_redirects: bool
+        :returns: A tuple (response_content, new_etag, new_last_modified, fetched_content_length).
+                  response_content is None if 304 Not Modified or if content is semantically identical within tolerance.
+                  fetched_content_length is for the *newly fetched* content.
+                  Returns (None, None, None, None) if request fails.
+        :rtype: Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]
+        """
+        if self.stop_event.is_set():
+            logger.debug(f"Stop event set. Aborting fetch for {url}.")
+            return None, None, None, None
+
+        headers: Dict[str, str] = {'User-Agent': random.choice(self.user_agents)}
+
+        if self.cache_clear_requested:
+            logger.debug(f"Performing full GET for {url} (explicit --cache-clear requested).")
+            response = self._execute_http_request('get', url, headers, allow_redirects, self.http_timeout)
+            if response is None:
+                return None, None, None, None
+
+            new_etag: Optional[str] = response.headers.get('ETag')
+            new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+            fetched_content_length: int = len(response.content)
+
+            logger.debug(f"Fetched live: {url} (Status: {response.status_code}). ETag: {new_etag}, Last-Modified: {new_last_modified}, Content-Length: {fetched_content_length}")
+            return response.text, new_etag, new_last_modified, fetched_content_length
+
+        if etag:
+            headers['If-None-Match'] = etag
+        if last_modified:
+            headers['If-Modified-Since'] = last_modified
+
+        headers_tuple = tuple(sorted(headers.items()))
+        response = self._make_request_cached_wrapper('get', url, headers_tuple, allow_redirects, self.http_timeout)
+
+        if response is None:
+            return None, None, None, None
+
+        new_etag: Optional[str] = response.headers.get('ETag')
+        new_last_modified: Optional[str] = response.headers.get('Last-Modified')
+        fetched_content_length: int = len(response.content)
+
+        if response.status_code == 304:
+            logger.debug(f"Resource {url} not modified (304). Using cached data.")
+            return None, etag, last_modified, cached_content_length
+
+        if cached_content_length is not None and \
+           abs(fetched_content_length - cached_content_length) <= self.cache_validation_tolerance:
+            logger.debug(f"Resource {url} content length is within tolerance ({self.cache_validation_tolerance} bytes). "
+                         f"Fetched: {fetched_content_length}, Cached: {cached_content_length}. Using cached data.")
+            return None, new_etag, new_last_modified, fetched_content_length
+        else:
+            if cached_content_length is not None:
+                logger.debug(f"Resource {url} content length differs beyond tolerance. "
+                             f"Fetched: {fetched_content_length}, Cached: {cached_content_length}, Tolerance: {self.cache_validation_tolerance}. Fetching new content.")
+            else:
+                logger.debug(f"No cached content length for {url} or conditional GET failed. Fetching new content.")
+            return response.text, new_etag, new_last_modified, fetched_content_length
+
+    def _load_json_with_lock(self, filepath: str) -> Optional[Dict[str, Any]]:
+        """
+        Loads JSON data from a file with shared locking.
+
+        :param filepath: The path to the JSON file.
+        :type filepath: str
+        :returns: The loaded JSON content as a dictionary, or None if loading fails.
+        :rtype: Optional[Dict[str, Any]]
+        """
+        if not os.path.exists(filepath):
+            logger.debug(f"Cache file not found at {filepath}.")
+            return None
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                portalocker.lock(f, portalocker.LOCK_SH)
+                try:
+                    data = json.load(f)
+                    return data
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error decoding JSON cache: {e}. Deleting corrupted file: {filepath}")
+                    f.seek(0)
+                    f.truncate()
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                    return None
+                finally:
+                    portalocker.unlock(f)
+        except portalocker.LockException as e:
+            logger.warning(f"Could not acquire lock for cache file {filepath}: {e}. Skipping cache load.")
+            return None
+        except IOError as e:
+            logger.warning(f"IOError loading JSON cache from {filepath}: {e}.")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error in _load_json_with_lock for {filepath}: {e}")
+            return None
+
+    def _save_json_with_lock(self, filepath: str, data: Dict[str, Any]) -> None:
+        """
+        Saves JSON data to a file using an atomic write operation with a temporary file and exclusive locking.
+
+        :param filepath: The path to the target JSON file.
+        :type filepath: str
+        :param data: The dictionary data to save.
+        :type data: Dict[str, Any]
+        :returns: None
+        :rtype: None
+        """
+        temp_filepath: str = f"{filepath}.tmp.{os.getpid()}"
+        try:
+            with open(temp_filepath, 'w+', encoding='utf-8') as f:
+                portalocker.lock(f, portalocker.LOCK_EX)
+                try:
+                    json.dump(data, f, ensure_ascii=False, indent=4)
+                    f.flush()
+                    os.fsync(f.fileno())
+                finally:
+                    portalocker.unlock(f)
+            os.replace(temp_filepath, filepath)
+            logger.debug(f"Saved JSON data to cache: {filepath}")
+        except portalocker.LockException as e:
+            logger.warning(f"Could not acquire lock for temporary cache file during save: {e}. Skipping cache save.")
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+        except IOError as e:
+            logger.error(f"Error saving JSON cache to {filepath} (IOError): {e}.")
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+        except Exception as e:
+            logger.error(f"Unexpected error saving JSON cache to {filepath}: {e}")
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
 
     def _get_channel_list(self) -> List[Dict[str, str]]:
         """
@@ -1137,24 +1179,45 @@ class TvsLeanScraper:
         new_last_modified: Optional[str] = None
         fetched_content_length: Optional[int] = None
 
-        cached_data, cached_etag, cached_last_modified, cached_content_length, is_cache_fresh = (
-            None, None, None, None, False
-        )
+        cached_data_from_file: Optional[Dict[str, Any]] = None
+        cached_channels_list: Optional[List[Dict[str, Any]]] = None
+        cached_etag: Optional[str] = None
+        cached_last_modified: Optional[str] = None
+        cached_content_length: Optional[int] = None
+        is_cache_fresh: bool = False
 
         if self.enable_cache and not self.cache_clear_requested:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, is_cache_fresh = self._load_channel_list_cache()
+            filepath = self._get_cache_channel_list_filepath()
+            cached_data_from_file = self._load_json_with_lock(filepath)
 
-            if is_cache_fresh and cached_data is not None:
-                channels = cached_data
-                logger.debug("Using fresh channel list from JSON cache.")
-                new_etag = cached_etag
-                new_last_modified = cached_last_modified
-                fetched_content_length = cached_content_length
-                return channels
-            elif cached_data is not None:
-                logger.debug("Channel list JSON cache is stale. Attempting conditional fetch.")
+            if cached_data_from_file:
+                cached_channels_list = cached_data_from_file.get('data')
+                cached_etag = cached_data_from_file.get('etag')
+                cached_last_modified = cached_data_from_file.get('last_modified')
+                cached_at_str = cached_data_from_file.get('cached_at')
+                cached_content_length = cached_data_from_file.get('content_length')
+                if cached_content_length is None:
+                    cached_content_length = 0
+
+                if cached_at_str:
+                    cached_at: datetime = datetime.fromisoformat(cached_at_str)
+                    current_time: datetime = datetime.now(timezone.utc) if cached_at.tzinfo else datetime.now()
+                    if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
+                        is_cache_fresh = True
+
+                if is_cache_fresh and cached_channels_list is not None:
+                    channels = cached_channels_list
+                    logger.debug("Using fresh channel list from JSON cache.")
+                    new_etag = cached_etag
+                    new_last_modified = cached_last_modified
+                    fetched_content_length = cached_content_length
+                    return channels
+                elif cached_channels_list is not None:
+                    logger.debug("Channel list JSON cache is stale. Attempting conditional fetch.")
+                else:
+                    logger.debug("Channel list JSON cache found but data is malformed. Performing full fetch.")
             else:
-                logger.debug("Channel list JSON cache not found. Performing full fetch.")
+                logger.debug("Channel list JSON cache not found or unreadable. Performing full fetch.")
         else:
             if self.cache_clear_requested:
                 logger.debug("Cache clear requested. Bypassing channel list cache.")
@@ -1173,11 +1236,18 @@ class TvsLeanScraper:
             logger.debug("Channel list HTML content was modified or fetched for the first time. Parsing new data.")
             channels = self.html_parser.parse_channel_list(response_content)
             if self.enable_cache:
-                self._save_channel_list_cache(channels, new_etag, new_last_modified, fetched_content_length)
-        elif cached_data is not None:
+                cache_content: Dict[str, Any] = {
+                    'data': channels,
+                    'etag': new_etag,
+                    'last_modified': new_last_modified,
+                    'cached_at': datetime.now(timezone.utc).isoformat(),
+                    'content_length': fetched_content_length,
+                }
+                self._save_json_with_lock(self._get_cache_channel_list_filepath(), cache_content)
+        elif cached_channels_list is not None:
             logger.debug("Channel list HTML content not modified (304) or semantically identical. Using stale JSON cache.")
-            channels = cached_data
-            new_etag = cached_etag
+            channels = cached_channels_list
+            new_etag = new_etag if new_etag is not None else cached_etag
             new_last_modified = new_last_modified if new_last_modified is not None else cached_last_modified
             fetched_content_length = fetched_content_length if fetched_content_length is not None else cached_content_length
         else:
@@ -1194,144 +1264,20 @@ class TvsLeanScraper:
         """
         return os.path.join(self.processed_data_cache_base_dir, CACHE_CHANNEL_LIST_FILE)
 
-    def _load_channel_list_cache(self) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], bool]:
-        """
-        Loads cached channel list data along with ETag, Last-Modified, and Content-Length.
-        Checks if the data is fresh based on its internal timestamp and TTL.
-        This function now always attempts to load the full JSON content if the file exists,
-        to retrieve ETag and Last-Modified headers for a potential conditional GET.
-
-        :returns: A tuple containing cached data, ETag, Last-Modified header, content length, and freshness status.
-        :rtype: Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], bool]
-        """
-        if self.stop_event.is_set():
-            logger.debug("Stop event set. Aborting cache load for channel list.")
-            return None, None, None, None, False
-
-        filepath: str = self._get_cache_channel_list_filepath()
-        if not os.path.exists(filepath):
-            logger.debug(f"Channel list cache file not found at {filepath}.")
-            return None, None, None, None, False
-
-        try:
-            with open(filepath, 'r+', encoding='utf-8') as f:
-                portalocker.lock(f, portalocker.LOCK_SH)
-                try:
-                    cache_content: Dict[str, Any] = json.load(f)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Error decoding channel list JSON cache: {e}. Deleting corrupted file and re-scraping: {filepath}")
-                    f.seek(0)
-                    f.truncate()
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-                    return None, None, None, None, False
-                finally:
-                    portalocker.unlock(f)
-
-            data: Optional[List[Dict[str, Any]]] = cache_content.get('data')
-            etag: Optional[str] = cache_content.get('etag')
-            last_modified: Optional[str] = cache_content.get('last_modified')
-            cached_at_str: Optional[str] = cache_content.get('cached_at')
-            content_length: Optional[int] = cache_content.get('content_length')
-            if content_length is None:
-                content_length = 0
-
-            is_fresh: bool = False
-            if cached_at_str:
-                cached_at: datetime = datetime.fromisoformat(cached_at_str)
-                current_time: datetime = datetime.now(timezone.utc) if cached_at.tzinfo else datetime.now()
-                if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
-                    is_fresh = True
-
-            if is_fresh:
-                logger.debug("Loaded channel list from JSON cache (fresh).")
-            else:
-                logger.debug("Channel list JSON cache is stale. Will attempt conditional fetch.")
-
-            return data, etag, last_modified, content_length, is_fresh
-
-        except portalocker.LockException as e:
-            logger.warning(f"Could not acquire lock for channel list cache: {e}. Skipping cache load.")
-            return None, None, None, None, False
-        except FileNotFoundError:
-            logger.debug(f"Channel list cache file not found at {filepath}.")
-            return None, None, None, None, False
-        except IOError as e:
-            logger.warning(f"IOError loading channel list JSON cache: {e}. Will attempt re-scraping.")
-            return None, None, None, None, False
-        except Exception as e:
-            logger.error(f"Unexpected error in _load_channel_list_cache: {e}")
-            return None, None, None, None, False
-
-    def _save_channel_list_cache(self, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None) -> None:
-        """
-        Saves channel list data to the JSON cache, including HTTP ETag, Last-Modified, and Content-Length headers,
-        using an atomic write operation with a temporary file.
-
-        :param data: The channel list data to save.
-        :type data: List[Dict[str, Any]]
-        :param etag: The ETag header value.
-        :type etag: Optional[str]
-        :param last_modified: The Last-Modified header value.
-        :type last_modified: Optional[str]
-        :param content_length: The Content-Length of the fetched content.
-        :type content_length: Optional[int]
-        """
-        if self.stop_event.is_set():
-            logger.debug("Stop event set. Aborting cache save for channel list.")
-            return
-
-        filepath: str = self._get_cache_channel_list_filepath()
-        temp_filepath: str = f"{filepath}.tmp.{os.getpid()}"
-
-        try:
-            with open(temp_filepath, 'w+', encoding='utf-8') as f:
-                portalocker.lock(f, portalocker.LOCK_EX)
-                try:
-                    cache_content: Dict[str, Any] = {
-                        'data': data,
-                        'etag': etag,
-                        'last_modified': last_modified,
-                        'cached_at': datetime.now(timezone.utc).isoformat(),
-                        'content_length': content_length,
-                    }
-                    json.dump(cache_content, f, ensure_ascii=False, indent=4)
-                    f.flush()
-                    os.fsync(f.fileno())
-                finally:
-                    portalocker.unlock(f)
-
-            os.replace(temp_filepath, filepath)
-            logger.debug(f"Saved channel list to JSON cache: {filepath}")
-
-        except portalocker.LockException as e:
-            logger.warning(f"Could not acquire lock for temporary channel list cache during save: {e}. Skipping cache save.")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-        except IOError as e:
-            logger.error(f"Error saving channel list JSON cache (IOError): {e}.")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-        except Exception as e:
-            logger.error(f"Unexpected error saving channel list JSON cache: {e}")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-
-
     def _get_daily_cache_filepath(self, channel_id: str, date: datetime.date) -> str:
         """
-        Constructs the file path for the daily JSON data cache.
+        Constructs the file path for the daily schedule JSON cache.
 
         :param channel_id: The ID of the channel.
         :type channel_id: str
         :param date: The date of the schedule.
         :type date: datetime.date
-        :returns: The full path to the JSON file.
+        :returns: The full path to the JSON file for the daily schedule.
         :rtype: str
         """
-        channel_dir: str = os.path.join(self.processed_data_cache_base_dir, channel_id.lower())
-        os.makedirs(channel_dir, exist_ok=True)
-        return os.path.join(channel_dir, f"{date.strftime('%Y%m%d')}.json")
+        channel_cache_dir = os.path.join(self.processed_data_cache_base_dir, channel_id.lower())
+        os.makedirs(channel_cache_dir, exist_ok=True)
+        return os.path.join(channel_cache_dir, date.strftime('%Y%m%d') + '.json')
 
     def _load_daily_json_cache(self, channel_id: str, date: datetime.date) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str], Optional[str], Optional[int], Optional[str], bool]:
         """
@@ -1340,8 +1286,6 @@ class TvsLeanScraper:
         Checks if the data is fresh based on its internal timestamp and TTL.
         Also deletes cache files for past days (if --keep-past-cache is not set) and for dates
         beyond MAX_DAYS_TO_SCRAPE from the current date.
-        This function now always attempts to load the full JSON content if the file exists,
-        to retrieve ETag and Last-Modified headers for a potential conditional GET.
 
         :param channel_id: The ID of the channel.
         :type channel_id: str
@@ -1357,9 +1301,6 @@ class TvsLeanScraper:
             return None, None, None, None, None, False
 
         filepath: str = self._get_daily_cache_filepath(channel_id, date)
-        if not os.path.exists(filepath):
-            logger.debug(f"Daily JSON cache file not found for {channel_id} on {date.strftime('%Y-%m-%d')} at {filepath}.")
-            return None, None, None, None, None, False
 
         if not self.keep_past_cache and date < (datetime.now().date() - timedelta(days=1)):
             logger.debug(f"Deleting stale cache file for past day {date.strftime('%Y-%m-%d')} for channel {channel_id} as --keep-past-cache is not set.")
@@ -1378,62 +1319,37 @@ class TvsLeanScraper:
                 logger.error(f"Error deleting cache file {filepath}: {e}")
             return None, None, None, None, None, False
 
-        try:
-            with open(filepath, 'r+', encoding='utf-8') as f:
-                portalocker.lock(f, portalocker.LOCK_SH)
-                try:
-                    cache_content: Dict[str, Any] = json.load(f)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Error decoding daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Deleting corrupted file and re-scraping: {filepath}")
-                    f.seek(0)
-                    f.truncate()
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-                    return None, None, None, None, None, False
-                finally:
-                    portalocker.unlock(f)
-
-            data: Optional[List[Dict[str, Any]]] = cache_content.get('data')
-            etag: Optional[str] = cache_content.get('etag')
-            last_modified: Optional[str] = cache_content.get('last_modified')
-            cached_at_str: Optional[str] = cache_content.get('cached_at')
-            content_length: Optional[int] = cache_content.get('content_length')
-            if content_length is None:
-                content_length = 0
-            cached_xmltv_timezone: Optional[str] = cache_content.get('xmltv_timezone')
-
-            is_fresh: bool = False
-            if cached_at_str:
-                cached_at: datetime = datetime.fromisoformat(cached_at_str)
-                current_time: datetime = datetime.now(timezone.utc)
-                if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
-                    is_fresh = True
-
-            if is_fresh:
-                logger.debug(f"Loaded schedule for {channel_id} on {date.strftime('%Y-%m-%d')} from daily JSON cache (fresh).")
-            else:
-                logger.debug(f"Daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')} is stale. Will attempt conditional fetch.")
-
-            return data, etag, last_modified, content_length, cached_xmltv_timezone, is_fresh
-
-        except portalocker.LockException as e:
-            logger.warning(f"Could not acquire lock for daily cache file {filepath}: {e}. Skipping cache load.")
+        cached_content = self._load_json_with_lock(filepath)
+        if not cached_content:
             return None, None, None, None, None, False
-        except FileNotFoundError:
-            logger.debug(f"Daily JSON cache file not found for {channel_id} on {date.strftime('%Y-%m-%d')} at {filepath}.")
-            return None, None, None, None, None, False
-        except IOError as e:
-            logger.warning(f"IOError loading daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}. Will attempt re-scraping.")
-            return None, None, None, None, False
-        except Exception as e:
-            logger.error(f"Unexpected error in _load_daily_json_cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
-            return None, None, None, None, None, False
+
+        data: Optional[List[Dict[str, Any]]] = cached_content.get('data')
+        etag: Optional[str] = cached_content.get('etag')
+        last_modified: Optional[str] = cached_content.get('last_modified')
+        cached_at_str: Optional[str] = cached_content.get('cached_at')
+        content_length: Optional[int] = cached_content.get('content_length')
+        if content_length is None:
+            content_length = 0
+        cached_xmltv_timezone: Optional[str] = cached_content.get('xmltv_timezone')
+
+        is_fresh: bool = False
+        if cached_at_str:
+            cached_at: datetime = datetime.fromisoformat(cached_at_str)
+            current_time: datetime = datetime.now(timezone.utc)
+            if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
+                is_fresh = True
+
+        if is_fresh:
+            logger.debug(f"Loaded schedule for {channel_id} on {date.strftime('%Y-%m-%d')} from daily JSON cache (fresh).")
+        else:
+            logger.debug(f"Daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')} is stale. Will attempt conditional fetch.")
+
+        return data, etag, last_modified, content_length, cached_xmltv_timezone, is_fresh
 
     def _save_daily_json_cache(self, channel_id: str, date: datetime.date, data: List[Dict[str, Any]], etag: Optional[str] = None, last_modified: Optional[str] = None, content_length: Optional[int] = None, xmltv_timezone_used: Optional[str] = None) -> None:
         """
         Saves processed JSON data to the daily data cache, including HTTP ETag, Last-Modified,
-        Content-Length headers, and the timezone used for XMLTV time formatting,
-        using an atomic write operation with a temporary file.
+        Content-Length headers, and the timezone used for XMLTV time formatting.
 
         :param channel_id: The ID of the channel.
         :type channel_id: str
@@ -1455,41 +1371,15 @@ class TvsLeanScraper:
             return
 
         filepath: str = self._get_daily_cache_filepath(channel_id, date)
-        temp_filepath: str = f"{filepath}.tmp.{os.getpid()}"
-
-        try:
-            with open(temp_filepath, 'w+', encoding='utf-8') as f:
-                portalocker.lock(f, portalocker.LOCK_EX)
-                try:
-                    cache_content: Dict[str, Any] = {
-                        'data': data,
-                        'etag': etag,
-                        'last_modified': last_modified,
-                        'cached_at': datetime.now(timezone.utc).isoformat(),
-                        'content_length': content_length,
-                        'xmltv_timezone': xmltv_timezone_used
-                    }
-                    json.dump(cache_content, f, ensure_ascii=False, indent=4)
-                    f.flush()
-                    os.fsync(f.fileno())
-                finally:
-                    portalocker.unlock(f)
-
-            os.replace(temp_filepath, filepath)
-            logger.debug(f"Saved schedule for {channel_id} on {date.strftime('%Y-%m-%d')} to daily JSON cache.")
-
-        except portalocker.LockException as e:
-            logger.warning(f"Could not acquire lock for temporary daily cache file during save: {e}. Skipping cache save.")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-        except IOError as e:
-            logger.error(f"Error saving daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')} (IOError): {e}.")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-        except Exception as e:
-            logger.error(f"Unexpected error saving daily JSON cache for {channel_id} on {date.strftime('%Y-%m-%d')}: {e}")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
+        cache_content: Dict[str, Any] = {
+            'data': data,
+            'etag': etag,
+            'last_modified': last_modified,
+            'cached_at': datetime.now(timezone.utc).isoformat(),
+            'content_length': content_length,
+            'xmltv_timezone': xmltv_timezone_used
+        }
+        self._save_json_with_lock(filepath, cache_content)
 
     def _strip_im_parameter_for_cache(self, url: str) -> str:
         """
@@ -1622,25 +1512,44 @@ class TvsLeanScraper:
         new_last_modified: Optional[str] = None
         fetched_content_length: Optional[int] = None
 
-        cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
-            None, None, None, None, None, False
-        )
+        cached_data_from_file: Optional[Dict[str, Any]] = None
+        cached_data: Optional[List[Dict[str, Any]]] = None
+        cached_etag: Optional[str] = None
+        cached_last_modified: Optional[str] = None
+        cached_content_length: Optional[int] = None
+        cached_xmltv_timezone: Optional[str] = None
+        is_cache_fresh: bool = False
 
         if self.enable_cache and not self.cache_clear_requested:
-            cached_data, cached_etag, cached_last_modified, cached_content_length, cached_xmltv_timezone, is_cache_fresh = (
-                self._load_daily_json_cache(channel_source_id, current_date)
-            )
+            filepath = self._get_daily_cache_filepath(channel_source_id, current_date)
+            cached_data_from_file = self._load_json_with_lock(filepath)
 
-            if is_cache_fresh and cached_data is not None:
-                if cached_xmltv_timezone == self.xmltv_timezone:
-                    items_for_day = cached_data
-                    logger.debug(f"Using fresh data from JSON cache for {channel_name} on {current_date.strftime('%Y-%m-%d')} (timezone matches).")
-                else:
-                    logger.info(f"Cached data for {channel_name} on {current_date.strftime('%Y-%m-%d')} is fresh but timezone differs (cached: {cached_xmltv_timezone}, requested: {self.xmltv_timezone}). Reprocessing timestamps.")
-                    items_for_day = cached_data
-                new_etag = cached_etag
-                new_last_modified = cached_last_modified
-                fetched_content_length = cached_content_length
+            if cached_data_from_file:
+                cached_data = cached_data_from_file.get('data')
+                cached_etag = cached_data_from_file.get('etag')
+                cached_last_modified = cached_data_from_file.get('last_modified')
+                cached_at_str = cached_data_from_file.get('cached_at')
+                cached_content_length = cached_data_from_file.get('content_length')
+                if cached_content_length is None:
+                    cached_content_length = 0
+                cached_xmltv_timezone = cached_data_from_file.get('xmltv_timezone')
+
+                if cached_at_str:
+                    cached_at: datetime = datetime.fromisoformat(cached_at_str)
+                    current_time: datetime = datetime.now(timezone.utc)
+                    if (current_time - cached_at.replace(tzinfo=timezone.utc)).total_seconds() < self.cache_ttl:
+                        is_cache_fresh = True
+
+                if is_cache_fresh and cached_data is not None:
+                    if cached_xmltv_timezone == self.xmltv_timezone:
+                        items_for_day = cached_data
+                        logger.debug(f"Using fresh data from JSON cache for {channel_name} on {current_date.strftime('%Y-%m-%d')} (timezone matches).")
+                    else:
+                        logger.info(f"Cached data for {channel_name} on {current_date.strftime('%Y-%m-%d')} is fresh but timezone differs (cached: {cached_xmltv_timezone}, requested: {self.xmltv_timezone}). Reprocessing timestamps.")
+                        items_for_day = cached_data
+                    new_etag = cached_etag
+                    new_last_modified = cached_last_modified
+                    fetched_content_length = cached_content_length
         else:
             if self.cache_clear_requested:
                 logger.debug(f"Cache clear requested. Bypassing cache load for {channel_name} on {current_date.strftime('%Y-%m-%d')}.")
@@ -1814,7 +1723,7 @@ class TvsLeanScraper:
                             logger.warning(f"Failed to remove empty cache directory {channel_dir_path}: {e}")
                         continue
 
-                    if self.target_sourceids and channel_dir_name.upper() not in self.target_sourceids:
+                    if self.target_sourceids and channel_dir_name.lower() not in self.target_sourceids:
                         logger.info(f"Removing cache directory for non-targeted channel: {channel_dir_name} at {channel_dir_path}")
                         try:
                             shutil.rmtree(channel_dir_path)
