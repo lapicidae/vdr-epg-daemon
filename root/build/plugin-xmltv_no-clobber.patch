@@ -1,0 +1,19 @@
+--- Makefile.orig	2025-06-08 02:53:47.159463680 +0200
++++ Makefile	2025-06-08 03:06:49.333059354 +0200
+@@ -37,12 +37,14 @@
+ 	fi
+ 	for i in `ls ./configs/xmltv*.xsl`; do\
+ 	   if ! test -f "$(CONFDEST)/$$i"; then\
+-	      install --mode=644 -D "$$i" $(CONFDEST)/; \
++	      dst=$(CONFDEST)/$$(basename "$$i"); \
++	      cp -n "$$i" "$$dst" && chmod 644 "$$dst"; \
+ 	   fi;\
+ 	done;
+ 	for i in `ls ./configs/xmltv*.xml`; do\
+ 	   if ! test -f "$(CONFDEST)/$$i"; then\
+-	      install --mode=644 -D "$$i" $(CONFDEST)/; \
++	      dst=$(CONFDEST)/$$(basename "$$i"); \
++	      cp -n "$$i" "$$dst" && chmod 644 "$$dst"; \
+ 	   fi;\
+ 	done;
+ 
