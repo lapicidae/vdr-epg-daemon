@@ -161,7 +161,6 @@ sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
 git clone https://github.com/chriszero/epgd-plugin-tvsp.git ./PLUGINS/tvsp
 git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
-sed -i '/install-config:/,/^$/ s|install --mode=644 -D|install -n --mode=644 -D|g' ./PLUGINS/xmltv/Makefile
 patch -d configs -i ../PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
 #make all install
 make install-epgd install-epghttpd
