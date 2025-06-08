@@ -198,7 +198,7 @@ Der Scraper ist darauf ausgelegt, mit dem `epgd`-Daemon zu funktionieren, der ty
 
 **Wichtiger Hinweis zum XMLTV-Plugin und XSLT:**
 Die standardmäßige `xmltv.xsl` (bereitgestellt vom [xmltv-Plugin](https://github.com/Zabrimus/epgd-plugin-xmltv/tree/master/configs)) ist möglicherweise nicht darauf ausgelegt, alle vom Scraper extrahierten Felder (z.B. Untertitel, detaillierte Besetzung/Crew, spezielle Bewertungen wie IMDB oder TVSpielfilm-Tipp, Bild-URLs) korrekt zu verarbeiten.
-Es kann notwendig sein, eine **modifizierte `xmltv.xsl`-Datei** zu verwenden oder eine eigene anzupassen, um diese zusätzlichen Informationen vollständig zu visualisieren und darzustellen. Eine Anpassung der XSLT ist auch erforderlich, um die verschiedenen Bildgrößen (`size="1"`, `size="2"`, `size="3"`) korrekt zu verarbeiten, die der Scraper bereitstellt.
+Es kann notwendig sein, eine **[modifizierte xmltv.xsl Datei](root/defaults/config/xmltv.xsl)** zu verwenden oder eine eigene anzupassen, um diese zusätzlichen Informationen vollständig zu visualisieren und darzustellen. Eine Anpassung der XSLT ist auch erforderlich, um die verschiedenen Bildgrößen (`size="1"`, `size="2"`, `size="3"`) korrekt zu verarbeiten, die der Scraper bereitstellt.
 
 ### `channelmap.conf`
 
