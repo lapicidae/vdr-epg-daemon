@@ -1,0 +1,29 @@
+--- epg.dat.orig	2025-06-09 12:49:57.879826884 +0200
++++ epg.dat	2025-06-09 12:55:04.894778705 +0200
+@@ -56,7 +56,7 @@
+    YEAR                 ""                                                   year                 Ascii       10 Data,
+    RATING               ""                                                   rating               Ascii      250 Data,
+    NUMRATING            ""                                                   numrating            Int          2 Data filter epgd|httpd|epg2vdr,
+-   TXTRATING            ""                                                   txtrating            Ascii      100 Data,
++   TXTRATING            ""                                                   txtrating            Ascii      200 Data,
+    MOVIEID              ""                                                   movieid              Ascii       20 Data,
+    MODERATOR            ""                                                   moderator            Ascii      250 Data,
+    OTHER                ""                                                   other                Text      2000 Data,
+@@ -432,7 +432,7 @@
+    TIPP                    ""                                               sub_tipp                      Ascii    250 Data,
+    RATING                  ""                                               sub_rating                    Ascii    250 Data,
+    NUMRATING               ""                                               sub_numrating                 Int        2 Data,
+-   TXTRATING               ""                                               sub_txtrating                 Ascii    100 Data,
++   TXTRATING               ""                                               sub_txtrating                 Ascii    200 Data,
+    TOPIC                   ""                                               sub_topic                     Ascii   1000 Data,
+    LONGDESCRIPTION         ""                                               sub_longdescription           MText  25000 Data,
+    COMPLONGDESCRIPTION     ""                                               sub_complongdescription       MText  25000 Data,
+@@ -541,7 +541,7 @@
+    YEAR                 ""                        year            Ascii       10 Data,
+    RATING               ""                        rating          Ascii      250 Data,
+    NUMRATING            ""                        numrating       Int          2 Data,
+-   TXTRATING            ""                        txtrating       Ascii      100 Data,
++   TXTRATING            ""                        txtrating       Ascii      200 Data,
+    MODERATOR            ""                        moderator       Ascii      250 Data,
+    OTHER                ""                        other           Text      2000 Data,
+    GUEST                ""                        guest           Text      1000 Data,

@@ -162,7 +162,8 @@ git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
 git clone https://github.com/chriszero/epgd-plugin-tvsp.git ./PLUGINS/tvsp
 git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
 patch PLUGINS/xmltv/Makefile /build/plugin-xmltv_no-clobber.patch
-patch -d configs -i ../PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
+patch configs/epg.dat /build/epgd-dat-extend-txtrating.patch
+patch configs/epg.dat PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
 #make all install
 make install-epgd install-epghttpd
 
