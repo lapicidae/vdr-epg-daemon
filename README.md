@@ -48,26 +48,27 @@ Here are some example snippets to help you get started creating a container.
 
 #### *docker-compose (recommended)*
 
-Compatible with docker-compose v2 schemas.
+Compatible with docker-compose v2 schemas. Take a look at the **[sample file](docker-compose.yml)**.
 ```yaml
 services:
-  vdr-epg-daemon:
-    image: ghcr.io/lapicidae/vdr-epg-daemon:latest
+  epgd:
     container_name: vdr-epg-daemon
     environment:
+      - LANG=de_DE.UTF-8  #other languages are currently not supported
       - PUID=1000
       - PGID=1000
-      - TZ=Europe/London
-      - LANG=de_DE.UTF-8 #other languages are currently not supported
+      - TZ=Europe/Berlin
+    hostname: epgd
+    image: ghcr.io/lapicidae/vdr-epg-daemon:latest
+    ports:
+      - 9999:9999
+    restart: unless-stopped
     volumes:
       - /path/to/cache:/epgd/cache
       - /path/to/config:/epgd/config
       - /path/to/epgimages:/epgd/epgimages
-      - /path/to/channellogos:/epgd/channellogos #optional
-      - /path/to/log:/epgd/log #optional
-    ports:
-      - 9999:9999
-    restart: unless-stopped
+      - /path/to/channellogos:/epgd/channellogos  # optional
+      - /path/to/log:/epgd/log                    # optional
 ```
 
 #### *docker cli*
@@ -77,7 +78,7 @@ docker run -d \
   --name=vdr-epg-daemon \
   -e PUID=1000 \
   -e PGID=1000 \
-  -e TZ=Europe/London \
+  -e TZ=Europe/Berlin \
   -e LANG=de_DE.UTF-8 `#other languages are currently not supported` \
   -p 9999:9999 \
   -v /path/to/cache:/epgd/cache \

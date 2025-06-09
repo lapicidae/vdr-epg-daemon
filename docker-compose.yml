@@ -1,18 +1,65 @@
-version: '2.4'
+networks:
+  epgd:
+    external: true
+
+
 services:
-  vdr-epg-daemon:
-    image: 'ghcr.io/lapicidae/vdr-epg-daemon:latest'
+
+  epgd:
     container_name: vdr-epg-daemon
-    volumes:
-      - './epgd/cache:/epgd/cache:rw'
-      - './epgd/channellogos:/epgd/channellogos:rw'
-      - './epgd/epgimages:/epgd/epgimages:rw'
-      - './epgd/config:/epgd/config:rw'
+    depends_on:
+      - mariadb
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'    # limit CPU usage to 50% of one core (optional)
     environment:
-      - PUID=666
-      - PGID=990
-      - START_EPGHTTPD=yes
-    network_mode: bridge
+      - LANG=de_DE.UTF-8
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Berlin
+    hostname: epgd
+    image: ghcr.io/lapicidae/vdr-epg-daemon:latest
+    labels:
+      - 'com.centurylinklabs.watchtower.depends-on=mariadb' # for watchtower image updates (optional)
+    networks:
+      - epgd
     ports:
-      - '9999:9999'
+      - 9999:9999
     restart: unless-stopped
+    volumes:
+      - /path/to/cache:/epgd/cache
+      - /path/to/config:/epgd/config
+      - /path/to/epgimages:/epgd/epgimages
+      - /path/to/channellogos:/epgd/channellogos  # optional
+      - /path/to/log:/epgd/log                    # optional
+
+  mariadb:
+    container_name: mariadb-epglv
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'    # limit CPU usage to 75% of one core (optional)
+          memory: '3G'    # limit memory usage to 3GB (optional)
+    environment:
+      - LANG=de_DE.UTF-8
+      - MARIADB_AUTO_UPGRADE=true
+      #- MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=true
+      - TZ=Europe/Berlin
+    healthcheck:
+      interval: 20s
+      retries: 2
+      test: '/usr/local/bin/healthcheck.sh --su-mysql --connect'
+      timeout: 3s
+    hostname: mariadb-epglv
+    image: ghcr.io/lapicidae/mariadb-epglv:latest
+    networks:
+      - epgd
+    ports:
+      - 3306:3306
+    restart: unless-stopped
+    # security_opt:
+    #   - 'unmask=/sys/fs/cgroup'   # optional - does not work!
+    volumes:
+      - /path/to/MySQL:/var/lib/mysql
+      - /sys/fs/cgroup/memory.pressure:/sys/fs/cgroup/memory.pressure   # workaround - 'security_opt' does not seem to work
