@@ -1724,7 +1724,7 @@ class TvsLeanScraper:
                         continue
 
                     if self.target_sourceids and channel_dir_name.lower() not in self.target_sourceids:
-                        logger.info(f"Removing cache directory for non-targeted channel: {channel_dir_name} at {channel_dir_path}")
+                        logger.debug(f"Removing cache directory for non-targeted channel: {channel_dir_name} at {channel_dir_path}")
                         try:
                             shutil.rmtree(channel_dir_path)
                         except OSError as e:
@@ -1747,13 +1747,13 @@ class TvsLeanScraper:
                             except ValueError:
                                 logger.debug(f"Skipping non-date named file in cache: {filename}")
                         elif filename.startswith('.') and '.tmp.' in filename:
-                            logger.info(f"Deleting orphaned temporary file: {filepath}")
+                            logger.debug(f"Deleting orphaned temporary file: {filepath}")
                             try:
                                 os.remove(filepath)
                             except OSError as e:
                                 logger.warning(f"Failed to delete orphaned temporary file {filepath}: {e}")
                 elif channel_dir_path.startswith('.') and '.tmp.' in channel_dir_path:
-                    logger.info(f"Deleting orphaned temporary file (top-level): {channel_dir_path}")
+                    logger.debug(f"Deleting orphaned temporary file (top-level): {channel_dir_path}")
                     try:
                         os.remove(channel_dir_path)
                     except OSError as e:
