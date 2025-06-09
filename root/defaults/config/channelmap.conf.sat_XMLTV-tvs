@@ -1,0 +1,484 @@
+//
+// ChannelMap for EPG Daemon (XMLTV-tvs prio)
+// --------------------------
+//
+// Format:
+//  <source>:<extid>[:<merge>[:<vps>]] = <cid1>[,<cid2>[,<cid3>]]
+//
+//
+// <source>   'vdr' or the source name provided by a plugin
+// <extid>    000 for vdr or the channle id used by the external EPG provider
+// <merge>    Merge DVB and externel EPG for this channel
+//            { 0, 1, 2 } (default 1, the default for source 'vdr' is 0)
+// <vps>      { y, Y, n, N, 0, 1 } (default 0)
+// <cid>      VDR ChannelID (Src-NID-TID-SID)
+//
+//
+// channels not listed here will not touched by the plugin
+//  if 'blacklist' in plugin options set to 'yes' the plugin will block all
+//  event data of the DVB stream since the channel is not listed here
+//
+//
+//
+// get this channels from DVB stream
+//
+// Astra (S19.2E)
+vdr:000		=	S19.2E-1-1116-10704		//	Crime Time HD
+vdr:000		=	S19.2E-1-1114-10602		//	Hip Trips HD
+vdr:000		=	S19.2E-1-1116-10707		//	Höhenrausch HD
+vdr:000		=	S19.2E-1-1114-10605		//	Just Cooking HD
+vdr:000		=	S19.2E-1-1116-10700		//	Just Fishing HD
+vdr:000		=	S19.2E-1-1114-10600		//	One Terra HD
+vdr:000		=	S19.2E-1-1116-10705		//	SERIEN + HD
+vdr:000		=	S19.2E-1-1114-10601		//	Xplore HD
+//
+//
+//
+// TV Movie
+// --------------------------
+//
+// ChannelIDs
+// http://www.clickfinder.de/daten/onlinedata/cftv520/datainfo.txt
+//
+tvm:1:2:1		=	S19.2E-1-1019-10301			//	Das Erste HD
+tvm:2:2:1		=	S19.2E-1-1011-11110			//	ZDF HD
+tvm:3:2			=	S19.2E-1-1057-61200			//	RTL HD
+tvm:4:2			=	S19.2E-1-1017-61300			//	SAT.1 HD
+tvm:5:2:1		=	S19.2E-1-1025-10325,S19.2E-1-1025-10326		//	BR Fernsehen Süd HD,BR Fernsehen Nord HD
+tvm:6:2:1		=	S19.2E-1-1025-10329,S19.2E-1-1025-10328,S19.2E-1-1025-10327,S19.2E-1-1025-10330		//	NDR FS HH HD,NDR FS MV HD,NDR FS NDS HD,NDR FS SH HD
+tvm:7:2:1		=	S19.2E-1-1061-10355			//	hr-fernsehen HD
+tvm:8:2:1		=	S19.2E-1-1019-10303,S19.2E-1-1019-10304,S19.2E-1-1039-10378		//	SWR BW HD,SWR RP HD,SR Fernsehen HD
+tvm:9:2:1		=	S19.2E-1-1021-28332,S19.2E-1-1021-28333,S19.2E-1-1021-28334,S19.2E-1-1021-28335,S19.2E-1-1021-28336,S19.2E-1-1021-28337,S19.2E-1-1021-28338,S19.2E-1-1021-28339,S19.2E-1-1021-28340,S19.2E-1-1021-28341,S19.2E-1-1021-28342		//	WDR HD Köln,WDR HD Aachen,WDR HD Bielefeld,WDR HD Bonn,WDR HD Dortmund,WDR HD Duisburg,WDR HD Düsseldorf,WDR HD Essen,WDR HD Münster,WDR HD Siegen,WDR HD Wuppertal
+tvm:11:2		=	S19.2E-1-1017-61301			//	ProSieben HD
+tvm:12:2:1		=	S19.2E-1-1010-11150			//	3sat HD
+tvm:13:2		=	S19.2E-1-1041-11931			//	SUPER RTL HD
+tvm:14:2		=	S19.2E-1-1078-28652			//	Comedy Central HD
+// tvm:16:2:1	=	S19.2E-1-1007-4911			//	ORF1 HD
+tvm:17:2:1		=	S19.2E-1-1007-4912,S19.2E-1-1005-13310		//	ORF2 HD,ORF 2 EUROPE HD
+// tvm:18		=	//	DR1
+// tvm:19		=	//	DR2
+// tvm:20		=	//	TV Een
+// tvm:21		=	//	NPO1
+// tvm:22		=	//	NPO2
+// tvm:23		=	//	NPO3
+// tvm:30		=	S19.2E-1-1091-31200			//	Eurosport 1 Deutschland
+// tvm:30hd:2	=	S19.2E-1-1043-12502			//	Eurosport 1 HD
+// tvm:31:2		=	S19.2E-1-1053-21108			//	WELT HD
+tvm:32:2		=	S19.2E-1-1078-28654			//	MTV HD
+// tvm:33		=	//	TV5 MONDE
+tvm:38:2:1		=	S19.2E-1-1019-10302			//	arte HD
+tvm:39:2		=	S19.2E-1-1017-61302			//	kabel eins HD
+tvm:41:2:1		=	S19.2E-1-1061-10352,S19.2E-1-1061-10353,S19.2E-1-1061-10354		//	MDR Sachsen HD,MDR S-Anhalt HD,MDR Thüringen HD
+// tvm:42		=	//	CNN Int. (HTTP 404)
+tvm:43:2		=	S19.2E-1-1057-61205			//	RTL2 HD
+tvm:45:2		=	S19.2E-1-1055-5505			//	SPORT1 HD
+tvm:46:2		=	S19.2E-1-1057-61201			//	VOX HD
+tvm:47:2		=	S19.2E-1-1057-61204			//	n-tv HD
+// tvm:48		=	//	EURONEWS GERMAN SD (HTTP 404)
+tvm:52:2		=	S19.2E-1-1109-5402			//	DMAX HD
+// tvm:53:2		=	S19.2E-1-1053-21104			//	HSE24 HD
+// tvm:54:2		=	S19.2E-1-1053-21103,S19.2E-1-1006-4230		//	QVC HD,QVC UHD
+tvm:55:2:1		=	S19.2E-1-1109-5401			//	TELE 5 HD
+tvm:56:2:1		=	S19.2E-1-1039-10377			//	ARD-alpha HD
+tvm:57:2:1		=	S19.2E-1-1061-10351,S19.2E-1-1061-10350		//	rbb Berlin HD,rbb Brandenburg HD
+tvm:60:2:1		=	S19.2E-1-1025-10331			//	phoenix HD
+// tvm:61		=	//	BBC World News Europe HD (HTTP 404)
+tvm:69			=	S19.2E-1-1078-28680			//	Nick/Comedy Central+1
+// tvm:73		=	//	VIVA Germany (obsolete)
+tvm:76:2:1		=	S19.2E-1-1010-11160			//	KiKA HD
+tvm:88:2		=	S19.2E-133-13-127			//	13th Street HD
+tvm:89:2		=	S19.2E-133-2-22				//	Heimatkanal
+// tvm:95		=	//	Classica (obsolete)
+// tvm:96		=	//	Junior (obsolete)
+// tvm:98		=	//	Planet
+tvm:102:2		=	S19.2E-1-1057-61206			//	RTLup HD
+tvm:111:2		=	S19.2E-1-1055-5500			//	Disney Channel HD
+// tvm:113		=	//	Goldstar TV
+tvm:122:2		=	S19.2E-1-1039-10376			//	ONE HD
+// tvm:123		=	//	EinsPlus (obsolete)
+// tvm:125		=	//	Bloomberg Europe TV (HTTP 404)
+// tvm:127		=	//	Beate Uhse (HTTP 404)
+tvm:128:2		=	S19.2E-1-1039-10375			//	tagesschau24 HD
+// tvm:129:2	=	S19.2E-1-1003-13228			//	ATV HD
+tvm:137:2		=	S19.2E-1-1010-11170			//	ZDFinfo HD
+// tvm:151		=	//	MGM
+// tvm:153		=	//	Extreme Sports Channel
+tvm:154:2		=	S19.2E-133-12-126			//	Syfy
+// tvm:156:2	=	S19.2E-1-1003-13224			//	Bibel TV HD
+// tvm:158		=	//	Animal Planet
+tvm:167:2		=	S19.2E-1-1017-61305			//	Kabel Eins Doku HD
+tvm:168:2		=	S19.2E-133-5-48				//	N24 DOKU
+tvm:169:2		=	S19.2E-133-2-139			//	Sky Cinema Family
+// tvm:171		=	//	Disney Junior
+// tvm:174		=	//	MTV Hits
+tvm:175:2		=	S19.2E-133-2-147			//	Sky One
+// tvm:176		=	//	Zee One (obsolete)
+// tvm:177		=	//	AXN Deutschland
+// tvm:181		=	//	History
+tvm:181hd:2		=	S19.2E-133-11-113			//	History
+// tvm:182		=	//	Kinowelt TV
+// tvm:183		=	//	K-TV HD (HTTP 404)
+// tvm:184		=	//	Motors TV
+// tvm:185		=	//	Silverline
+// tvm:186		=	//	tv.gusto premium
+// tvm:187		=	//	MTV 80s (HTTP 404)
+// tvm:188		=	//	Wetter Fernsehen
+// tvm:189		=	//	MTV Dance
+// tvm:190		=	//	National Geographic (obosolete)
+// tvm:190hd	=	//	NatGeo
+// tvm:201		=	//	E! Entertainm.
+// tvm:205		=	//	Gute Laune TV
+// tvm:206		=	//	Trace.TV
+// tvm:209		=	//	kabel eins classics
+tvm:211			=	S19.2E-133-12-28			//	Boomerang
+// tvm:214		=	//	RTL Crime (obosolete)
+// tvm:215		=	//	RTL Living (obsolete)
+// tvm:216		=	//	RTL Passion (obsolete)
+// tvm:218		=	//	Crime + Investigation (HTTP 404)
+tvm:219:2		=	S19.2E-133-11-404			//	Cartoon Network
+tvm:220:2		=	S19.2E-133-4-140			//	Warner TV Film
+// tvm:221		=	//	MEZZO
+// tvm:222		=	//	Animax (obsolete)
+// tvm:223		=	//	Rock TV
+// tvm:224		=	//	Jukebox (HTTP 404)
+// tvm:225		=	//	MTV Music 24 (empty file)
+// tvm:227		=	//	Nicktoons (HTTP 404)
+// tvm:229		=	//	Tier TV
+// tvm:232		=	//	MCM Top
+// tvm:234		=	//	The Karaoke Channel
+// tvm:235		=	//	Baby TV
+// tvm:236		=	//	LUXE.TV
+// tvm:238		=	//	Deluxe Music HD (HTTP 404)
+// tvm:239		=	//	Eurosport 2 HD
+// tvm:240		=	//	MTV Base
+// tvm:241		=	//	ATV Europa
+// tvm:242		=	//	Detski Mir / Teleclub
+// tvm:243		=	//	Euro D
+// tvm:244		=	//	Euro Star
+// tvm:246		=	//	iTVN
+// tvm:247		=	//	Kanal 7 Int
+// tvm:249		=	//	Nashe Kino
+// tvm:250		=	//	RTR-Planeta
+// tvm:251		=	//	RTVi
+// tvm:252		=	//	Show Turk
+// tvm:253		=	//	Türkmax
+// tvm:257		=	//	iM1 Hits (obsolete)
+// tvm:259		=	//	sonnenklar.TV HD (HTTP 404)
+// tvm:263:2	=	S19.2E-1-1048-4300			//	SPORTDIGITAL FUSSBALL HD
+// tvm:264		=	//	Fox
+tvm:265:2		=	S19.2E-133-2-518			//	Romance TV
+tvm:267:2		=	S19.2E-133-16-123			//	Warner TV Serie
+// tvm:268		=	//	TIMM (obsolete)
+tvm:269:2		=	S19.2E-1-1053-21100			//	ANIXE HD
+// tvm:270		=	//	Sky Cinema Premieren (obsolete)
+tvm:270hd:2		=	S19.2E-133-6-131			//	Sky Cinema Premiere
+// tvm:271		=	//	Sky Cinema +1 (obsolete)
+// tvm:272		=	//	Sky Cinema Premieren +24 (obsolete)
+// tvm:273		=	//	Sky Cinema Best Of (obsolete)
+// tvm:273hd	=	//	Sky Cinema Best Of (obsolete)
+// tvm:274		=	//	Sky Cinema Action (obsolete)
+tvm:274hd:2		=	S19.2E-133-9-116			//	Sky Cinema Action
+// tvm:275		=	//	Sky Emotion (obsolete)
+// tvm:276		=	//	Sky Cinema Fun (obsolete)
+tvm:277:2		=	S19.2E-133-12-107			//	Sky Cinema Classics
+tvm:278:2		=	S19.2E-133-4-23				//	Sky Krimi
+// tvm:279		=	//	Disney Cinemagic (obsolete)
+// tvm:279hd	=	//	Disney Cinemagic HD
+// tvm:284		=	//	Nat Geo Wild
+// tvm:285		=	//	Spiegel Geschichte
+// tvm:286		=	//	Sky Sport Austria 1 (HTTP 404)
+// tvm:287:2	=	S19.2E-133-11-168			//	Motorvision+
+// tvm:288:2	=	S19.2E-133-12-105			//	Sky Sport Bundesliga
+// tvm:289		=	//	Sky Sport 1 (obsolete)
+// tvm:289hd	=	S19.2E-133-6-268			//	Sky Sport 1
+// tvm:290		=	//	Sky Sport 2 (obsolete)
+// tvm:290hd	=	S19.2E-133-2-278			//	Sky Sport 2 (empty file)
+// tvm:291		=	//	TGRT EU
+// tvm:292		=	//	Disney XD
+tvm:294:2		=	S19.2E-1-1011-11130			//	zdf_neo HD
+// tvm:296		=	//	Fashion Tv
+// tvm:297		=	//	LUST PUR
+// tvm:298		=	//	AstroTV (obsolete)
+// tvm:299		=	//	BBC Entertainment
+// tvm:300		=	//	OKTO TV
+// tvm:301		=	//	gotv (obsolete)
+// tvm:305		=	//	AutoMotorSportChannel
+// tvm:307		=	//	DAF (obsolete)
+// tvm:309		=	//	JimJam
+// tvm:310		=	//	Nick.Jr. (HTTP 404)
+// tvm:311		=	//	yourfamilyentertainment
+// tvm:314:2	=	S19.2E-1-1031-5303			//	PULS 4 HD Austria
+// tvm:316		=	//	ServusTV HD Deutschland (obsolete)
+tvm:318:2		=	S19.2E-1-1017-61303			//	SIXX HD
+// tvm:319		=	//	Fine Living Network
+// tvm:378		=	//	zdf.kultur (obsolete)
+// tvm:380		=	//	MTV Live HD
+// tvm:381		=	//	MezzoLive HD
+// tvm:382		=	//	KidsCo
+// tvm:383		=	//	Hustler TV (HTTP 404)
+// tvm:406		=	//	Spiegel TV Wissen
+// tvm:411		=	//	Sky Sport News (HTTP 404)
+// tvm:420		=	S19.2E-1-1048-4301			//	Sportdigital1+
+tvm:421:2		=	S19.2E-133-11-136			//	Warner TV Comedy
+tvm:427:2		=	S19.2E-1-1041-11951			//	RTLNITRO HD
+// tvm:428		=	//	SAT.1 emotions
+tvm:429:2		=	S19.2E-133-13-110			//	Sky Atlantic
+tvm:430:2		=	S19.2E-1-1043-12500			//	SAT.1 Gold
+// tvm:431		=	//	Pro7 FUN HD
+// tvm:432		=	//	Sky 3D
+// tvm:435		=	//	Fuel TV
+tvm:436:2		=	S19.2E-1-1017-61304			//	Pro7 MAXX HD
+// tvm:437		=	//	RiC (HTTP 404)
+// tvm:439		=	//	Sony Entertainment
+// tvm:440		=	//	Sport1 US HD
+tvm:441:2		=	S19.2E-133-16-101			//	Universal TV HD
+tvm:445:2		=	S19.2E-1-1033-10100			//	TLC HD
+// tvm:447:2:1	=	S19.2E-1-1005-13308			//	ORF III HD
+// tvm:451:2	=	S19.2E-1-1005-13309			//	ORF SPORT+ HD
+// tvm:459:2	=	S19.2E-1-1003-13223			//	ATV2
+// tvm:467		=	//	Discovery Channel (obsolete)
+tvm:467hd:2		=	S19.2E-133-6-130			//	Discovery HD
+//
+// Eutelsat (S13.0E)
+// tvm:24:2:1	=	S13.0E-318-12300-17201		//	SRF 1 HD
+// tvm:35:2:1	=	S13.0E-318-12300-17202		//	SRF zwei HD
+// tvm:254		=	//	TVP Polonia
+// tvm:256		=	//	TVP Kultura
+// tvm:380:2	=	S13.0E-318-6500-1			//	MTV Live HD
+// tvm:400:2	=	S13.0E-318-15300-808		//	France 24 HD (in English)
+// tvm:401:2	=	S13.0E-318-15300-807		//	France 24 HD (en Francais)
+// tvm:402:2	=	S13.0E-319-15900-302		//	France 2 HD
+// tvm:403:2	=	S13.0E-319-15900-303		//	France 3 HD
+// tvm:404:2	=	S13.0E-319-15900-304		//	France 4 HD
+// tvm:405:2	=	S13.0E-319-15900-305		//	France 5 HD
+//
+// Türksat (S42.0E)
+// tvm:379		=	//	POWERTURK HD
+// tvm:380:2	=	S42.0E-66-3-1301			//	CNN TÜRK
+// tvm:381:2	=	S42.0E-66-3-1309			//	EURO D
+// tvm:382:2	=	S42.0E-1070-32204-13500		//	SHOW TURK
+
+//
+//
+// TV-Spielfilm (XMLTV)
+// --------------------------
+//
+// ChannelIDs
+// https://m.tvspielfilm.de/sender/
+//
+// Astra (S19.2E)
+// xmltv:123tv.tvs		=	S19.2E-1-1055-5502			//	1-2-3.tv HD
+xmltv:13th.tvs			=	S19.2E-133-13-127			//	13th Street
+xmltv:2neo.tvs			=	S19.2E-1-1011-11130			//	zdf_neo HD
+// xmltv:3plus.tvs		=	S19.2E-1-1015-4704			//	3+
+xmltv:3sat.tvs:1:1		=	S19.2E-1-1010-11150			//	3sat HD
+// xmltv:adult.tvs		=	//	Adult Channel
+// xmltv:aljaz.tvs		=	S19.2E-1-1002-5031			//	Al Jazeera English HD
+xmltv:alpha.tvs:1:1		=	S19.2E-1-1039-10377			//	ARD-alpha HD
+// xmltv:ams.tvs		=	//	Auto Motor und Sport
+xmltv:anixe.tvs			=	S19.2E-1-1053-21100			//	ANIXE HD
+// xmltv:aplan.tvs		=	//	Animal Planet
+xmltv:ard.tvs:1:1		=	S19.2E-1-1019-10301			//	Das Erste HD
+xmltv:arte.tvs:1:1		=	S19.2E-1-1019-10302			//	arte HD
+// xmltv:atv.tvs		=	S19.2E-1-1003-13228			//	ATV HD
+// xmltv:atv2.tvs		=	S19.2E-1-1003-13223			//	ATV2 HD
+// xmltv:axn.tvs		=	//	AXN Black
+// xmltv:bbc-n.tvs		=	//	BBC News
+// xmltv:bbc.tvs		=	S19.2E-1-1002-5001			//	BBC World News Europe HD
+// xmltv:bbc1.tvs		=	//	BBC One
+// xmltv:bbc2.tvs		=	//	BBC Two
+// xmltv:bbc4.tvs		=	//	BBC Four
+// xmltv:be1.tvs		=	//	VRT 1
+// xmltv:berg.tvs		=	S19.2E-53-1105-4115			//	Bergblick
+// xmltv:bibel.tvs		=	S19.2E-1-1003-13224			//	Bibel TV HD
+// xmltv:blm.tvs		=	S19.2E-1-1111-7200			//	Bloomberg Europe TV
+xmltv:br.tvs:1:1		=	S19.2E-1-1025-10325,S19.2E-1-1025-10326		//	BR Fernsehen Süd HD,BR Fernsehen Nord HD
+// xmltv:buli.tvs		=	S19.2E-133-12-105			//	Sky Sport Bundesliga
+xmltv:butv.tvs			=	S19.2E-133-9-133			//	Beate Uhse
+xmltv:c-net.tvs			=	S19.2E-133-11-404			//	Cartoon Network
+// xmltv:c5.tvs			=	//	Canale 5
+xmltv:cc.tvs			=	S19.2E-1-1078-28652			//	Comedy Central HD
+// xmltv:ch21.tvs		=	S19.2E-1-1033-10104			//	Channel21 HD
+xmltv:cin.tvs			=	S19.2E-133-6-131			//	Sky Cinema Premiere
+// xmltv:class.tvs		=	//	Classica
+// xmltv:cnbc.tvs		=	S19.2E-133-11-125			//	CNBC
+// xmltv:cnn-t.tvs		=	//	CNN Türk
+// xmltv:cnn.tvs		=	S19.2E-1-1028-4422			//	CNN Int.
+// xmltv:cplus.tvs		=	//	Canal+
+// xmltv:cplusc.tvs		=	//	Canal+ Cinéma
+// xmltv:cpluss.tvs		=	//	Canal+ Sport
+xmltv:crin.tvs			=	S19.2E-133-2-402			//	Crime + Investigation
+// xmltv:dazn.tvs		=	//	DAZN
+xmltv:df1.tvs			=	S19.2E-1-1007-4914			//	DF1 HD
+xmltv:disne.tvs			=	S19.2E-1-1055-5500			//	Disney Channel HD
+xmltv:dmax.tvs			=	S19.2E-1-1109-5402			//	DMAX HD
+xmltv:dmc.tvs			=	S19.2E-1-1055-5503			//	Deluxe Music HD
+xmltv:dmf.tvs			=	S19.2E-133-5-776			//	DMF
+xmltv:dokus.tvs			=	S19.2E-1-1115-13103			//	DOKUSAT
+// xmltv:dr1.tvs		=	//	DR1
+// xmltv:dr2.tvs		=	//	DR2
+// xmltv:eotv.tvs		=	//	More than Sports TV
+// xmltv:es1.tvs		=	S19.2E-1-1048-4302			//	eSportsOne
+// xmltv:euro-d.tvs		=	//	EURO D
+// xmltv:euro-s.tvs		=	//	Euro Star
+// xmltv:euro.tvs		=	S19.2E-1-1043-12502			//	Eurosport 1 HD
+// xmltv:euro2.tvs		=	//	Eurosport 2
+// xmltv:euron.tvs		=	S19.2E-1-1012-6388			//	EURONEWS GERMAN SD
+// xmltv:ex-sp.tvs		=	//	EXTREME SPORTS
+// xmltv:fatv.tvs		=	//	Fashion TV
+xmltv:fes.tvs			=	S19.2E-1-1039-10376			//	ONE HD
+// xmltv:fftv.tvs		=	//	Fix & Foxi TV
+// xmltv:fr24e.tvs		=	S19.2E-1-1022-6906			//	France 24 (In English)
+// xmltv:fr24f.tvs		=	//	France 24 (franz.)
+// xmltv:fra2.tvs		=	//	France 2
+// xmltv:fra3.tvs		=	//	France 3
+// xmltv:fra4.tvs		=	//	France 4
+// xmltv:fra5.tvs		=	//	France 5
+// xmltv:geo.tvs		=	//	GEO Television
+// xmltv:gold.tvs		=	//	Goldstar TV
+// xmltv:gusto.tvs		=	//	BonGusto
+xmltv:hddis.tvs			=	S19.2E-133-6-130			//	Discovery
+// xmltv:health.tvs		=	//	health.tv
+xmltv:heima.tvs			=	S19.2E-133-2-22				//	Heimatkanal
+xmltv:hgtv.tvs			=	S19.2E-133-15-38			//	HGTV
+// xmltv:hh1.tvs		=	//	Hamburg 1
+xmltv:hishd.tvs 		=	S19.2E-133-11-113			//	History
+xmltv:hr.tvs:1:1 		=	S19.2E-1-1061-10355			//	hr-fernsehen HD
+// xmltv:hse.tvs 		=	S19.2E-1-1053-21104			//	HSE HD
+// xmltv:hseextra.tvs	=	S19.2E-1-1055-5501			//	HSE Extra HD
+xmltv:juke.tvs 			=	S19.2E-133-11-401			//	Jukebox
+xmltv:k1.tvs 			=	S19.2E-1-1017-61302			//	kabel eins HD
+// xmltv:k1cla.tvs		=	//	kabel eins classics
+xmltv:k1doku.tvs		=	S19.2E-1-1017-61305			//	Kabel Eins Doku HD
+xmltv:kika.tvs:1:1 		=	S19.2E-1-1010-11160			//	KiKA HD
+// xmltv:kinow.tvs		=	//	Kinowelt TV
+// xmltv:ktv.tvs		=	S19.2E-1-1043-12530			//	K-TV HD
+// xmltv:laune.tvs		=	//	Gute Laune TV
+// xmltv:leitv.tvs		=	//	Leipzig Fernsehen
+// xmltv:lustp.tvs		=	//	LUST PUR
+// xmltv:mapo.tvs		=	//	Marco Polo TV
+xmltv:mdr.tvs:1:1		=	S19.2E-1-1061-10352,S19.2E-1-1061-10353,S19.2E-1-1061-10354		//	MDR Sachsen HD,MDR S-Anhalt HD,MDR Thüringen HD
+// xmltv:mezzo.tvs		=	//	Mezzo
+// xmltv:movtv.tvs		=	S19.2E-133-11-168			//	Motorvision+
+// xmltv:mtv-b.tvs		=	//	MTV Base
+// xmltv:mtv-d.tvs		=	//	Club MTV
+// xmltv:mtv-h.tvs		=	//	MTV Hits
+// xmltv:mtv-l.tvs		=	//	MTV Live HD
+xmltv:mtv.tvs			=	S19.2E-1-1078-28654			//	MTV HD
+// xmltv:n-ghd.tvs		=	//	Nat Geo HD
+// xmltv:n-gw.tvs		=	//	NAT GEO WILD
+xmltv:n24doku.tvs		=	S19.2E-133-5-48				//	N24 DOKU
+xmltv:n3.tvs:1:1		=	S19.2E-1-1025-10329,S19.2E-1-1025-10328,S19.2E-1-1025-10327,S19.2E-1-1025-10330		//	NDR FS HH HD,NDR FS MV HD,NDR FS NDS HD,NDR FS SH HD
+// xmltv:nauch.tvs		=	//	Nautical Channel
+// xmltv:nhk.tvs		=	S19.2E-1-1002-5021			//	NHK WORLD-JPN
+xmltv:nick.tvs			=	S19.2E-1-1078-28680			//	Nick/Comedy Central+1
+xmltv:nickj.tvs			=	S19.2E-1-1078-28667			//	Nick.Jr.
+xmltv:nickt.tvs			=	S19.2E-133-13-27			//	Nicktoons
+// xmltv:nowus.tvs		=	//	NOW US
+xmltv:ntv.tvs			=	S19.2E-1-1057-61204			//	n-tv HD
+xmltv:oe24tv.tvs		=	S19.2E-1-1005-13314			//	oe24.TV
+// xmltv:orf1.tvs		=	S19.2E-1-1007-4911			//	ORF1 HD
+xmltv:orf2.tvs			=	S19.2E-1-1007-4912,S19.2E-1-1005-13310	//	ORF2 HD,ORF 2 EUROPE HD
+// xmltv:orf3.tvs		=	S19.2E-1-1005-13308			//	ORF III HD
+// xmltv:orfsp.tvs		=	S19.2E-1-1005-13309			//	ORF SPORT+ HD
+// xmltv:pass.tvs		=	//	RTL Passion
+// xmltv:pboy.tvs		=	S19.2E-1-1060-30603			//	PLAYBOY TV
+xmltv:phoen.tvs:1:1		=	S19.2E-1-1025-10331			//	phoenix HD
+xmltv:pro7.tvs			=	S19.2E-1-1017-61301			//	ProSieben HD
+// xmltv:pro7f.tvs		=	//	Pro7 FUN
+xmltv:pro7m.tvs			=	S19.2E-1-1017-61304			//	Pro7 MAXX HD
+// xmltv:puls4.tvs		=	S19.2E-1-1031-5303			//	PULS 4 HD Austria
+// xmltv:puls8.tvs		=	//	PULS acht
+// xmltv:qvc.tvs		=	S19.2E-1-1053-21103,S19.2E-1-1006-4230		//	QVC HD,QVC UHD
+// xmltv:qvcp.tvs		=	S19.2E-1-1055-5504			//	QVC ZWEI HD
+xmltv:rbb.tvs:1:1		=	S19.2E-1-1061-10351,S19.2E-1-1061-10350		//	rbb Berlin HD,rbb Brandenburg HD
+// xmltv:rbtv.tvs		=	//	Rocket Beans TV
+xmltv:ric.tvs			=	S19.2E-1-1007-4930			//	RiC
+xmltv:rmtv.tvs			=	S19.2E-1-1113-12614			//	RheinMain TV
+// xmltv:rnf.tvs		=	//	Rhein-Neckar Fernsehen
+xmltv:rom.tvs			=	S19.2E-133-2-518			//	Romance TV
+// xmltv:rtl-c.tvs		=	//	RTL Crime
+// xmltv:rtl-l.tvs		=	//	RTL Living
+xmltv:rtl-n.tvs			=	S19.2E-1-1041-11951			//	RTLNITRO HD
+xmltv:rtl.tvs			=	S19.2E-1-1057-61200			//	RTL HD
+xmltv:rtl2.tvs			=	S19.2E-1-1057-61205			//	RTL2 HD
+xmltv:rtlpl.tvs			=	S19.2E-1-1057-61206			//	RTLup HD
+// xmltv:s1plu.tvs		=	S19.2E-1-1048-4301			//	Sportdigital1+
+xmltv:sat1.tvs			=	S19.2E-1-1017-61300			//	SAT.1 HD
+// xmltv:sat1e.tvs		=	//	SAT.1 emotions
+xmltv:sat1g.tvs			=	S19.2E-1-1043-12500			//	SAT.1 Gold HD
+xmltv:scifi.tvs			=	S19.2E-133-12-126			//	Syfy
+// xmltv:servusa.tvs	=	S19.2E-1-1007-4913			//	ServusTV HD Oesterreich
+// xmltv:sf1.tvs		=	//	SRF 1
+// xmltv:sf2.tvs		=	//	SRF zwei
+// xmltv:shot.tvs		=	//	SHOW TURK
+// xmltv:silve.tvs		=	//	Silverline
+xmltv:sixx.tvs			=	S19.2E-1-1017-61303			//	SIXX HD
+// xmltv:sklar.tvs		=	S19.2E-1-1109-5400			//	sonnenklar.TV HD
+xmltv:sky-a.tvs			=	S19.2E-133-9-116			//	Sky Cinema Action
+xmltv:sky-cr.tvs		=	S19.2E-133-6-13				//	Sky Crime
+xmltv:sky-d.tvs			=	S19.2E-133-13-112			//	Sky Documentaries
+xmltv:sky-f.tvs			=	S19.2E-133-2-139			//	Sky Cinema Family
+xmltv:sky-k.tvs			=	S19.2E-133-4-23				//	Sky Krimi
+xmltv:sky-n.tvs			=	S19.2E-133-12-107			//	Sky Cinema Classics
+xmltv:sky-na.tvs		=	S19.2E-133-6-118			//	Sky Nature
+xmltv:sky1.tvs			=	S19.2E-133-2-147			//	Sky One
+xmltv:skyat.tvs			=	S19.2E-133-13-110			//	Sky Atlantic
+xmltv:skych.tvs			=	S19.2E-133-13-111			//	Sky Cinema Highlights
+// xmltv:skyf1.tvs		=	S19.2E-133-9-17				//	Sky Sport F1
+xmltv:skyrp.tvs			=	S19.2E-133-12-124			//	Sky Replay
+// xmltv:skysg.tvs		=	S19.2E-133-13-144			//	Sky Sport Golf
+xmltv:skysh.tvs			=	S19.2E-133-11-142			//	Sky Showcase
+// xmltv:skysm.tvs		=	S19.2E-133-2-141			//	Sky Sport Mix
+// xmltv:skyspl.tvs		=	S19.2E-133-4-145			//	Sky Sport Premier League
+// xmltv:skyst.tvs		=	S19.2E-133-13-114			//	Sky Sport Tennis
+// xmltv:skyste.tvs		=	S19.2E-133-6-129			//	Sky Sport Top Event
+// xmltv:snhd.tvs		=	S19.2E-133-12-108			//	Sky Sport News
+// xmltv:sony.tvs		=	//	AXN White
+// xmltv:sp-ge.tvs		=	//	SPIEGEL Geschichte
+// xmltv:spo-a.tvs		=	S19.2E-133-4-143			//	Sky Sport Austria 1
+// xmltv:spo-d.tvs		=	S19.2E-1-1048-4300			//	SPORTDIGITAL FUSSBALL HD
+// xmltv:sport.tvs		=	S19.2E-1-1055-5505			//	SPORT1 HD
+// xmltv:sptvw.tvs		=	//	Curiosity Channel
+// xmltv:sttv.tvs		=	//	STAR TV
+xmltv:super.tvs			=	S19.2E-1-1041-11931			//	SUPER RTL HD
+xmltv:swr.tvs:1:1		=	S19.2E-1-1019-10303,S19.2E-1-1019-10304,S19.2E-1-1039-10378		//	SWR BW HD,SWR RP HD,SR Fernsehen HD
+xmltv:tag24.tvs			=	S19.2E-1-1039-10375			//	tagesschau24 HD
+xmltv:tele5.tvs			=	S19.2E-1-1109-5401			//	TELE 5 HD
+xmltv:tlc.tvs			=	S19.2E-1-1033-10100			//	TLC HD
+// xmltv:tmax.tvs		=	//	beIN GURME
+xmltv:tnt-c.tvs			=	S19.2E-133-11-136			//	Warner TV Comedy
+xmltv:tnt-f.tvs			=	S19.2E-133-4-140			//	Warner TV Film HD
+xmltv:tnt-s.tvs			=	S19.2E-133-16-123			//	Warner TV Serie
+xmltv:toggo.tvs			=	S19.2E-1-1089-12030			//	TOGGO plus
+// xmltv:trace.tvs		=	//	Trace TV
+// xmltv:travelxp.tvs	=	//	travelxp 4K
+// xmltv:tv2.tvs		=	//	TV2
+// xmltv:tv5.tvs		=	//	TV5 Monde
+// xmltv:tvb.tvs		=	//	tv.berlin
+xmltv:tvm.tvs			=	S19.2E-1-1023-5801			//	münchen.tv HD
+xmltv:uhd1.tvs			=	S19.2E-1-1035-2				//	UHD1 by ASTRA / HD+
+xmltv:unive.tvs			=	S19.2E-133-16-101			//	Universal TV
+// xmltv:vh1.tvs		=	S19.2E-1-1078-28657			//	MTV 80s
+xmltv:vox.tvs			=	S19.2E-1-1057-61201			//	VOX HD
+xmltv:voxup.tvs			=	S19.2E-1-1057-61207			//	VOXup HD
+xmltv:wdr.tvs:1:1		=	S19.2E-1-1021-28332,S19.2E-1-1021-28333,S19.2E-1-1021-28334,S19.2E-1-1021-28335,S19.2E-1-1021-28336,S19.2E-1-1021-28337,S19.2E-1-1021-28338,S19.2E-1-1021-28339,S19.2E-1-1021-28340,S19.2E-1-1021-28341,S19.2E-1-1021-28342		//	WDR HD Köln,WDR HD Aachen,WDR HD Bielefeld,WDR HD Bonn,WDR HD Dortmund,WDR HD Duisburg,WDR HD Düsseldorf,WDR HD Essen,WDR HD Münster,WDR HD Siegen,WDR HD Wuppertal
+// xmltv:wdwtv.tvs		=	//	Welt der Wunder TV
+xmltv:welt.tvs			=	S19.2E-1-1053-21108			//	WELT HD
+xmltv:zdf.tvs:1:1		=	S19.2E-1-1011-11110			//	ZDF HD
+xmltv:zinfo.tvs			=	S19.2E-1-1010-11170			//	ZDFinfo HD
+//
+// Eutelsat (S13.0E)
+// xmltv:fr24e.tvs		=	S13.0E-318-15300-808		//	France 24 HD (in English)
+// xmltv:fr24f.tvs		=	S13.0E-318-15300-807		//	France 24 HD (en Francais)
+// xmltv:fra2.tvs		=	S13.0E-319-15900-302		//	France 2 HD
+// xmltv:mtv-l.tvs		=	S13.0E-318-6500-1			//	MTV Live HD
+// xmltv:sf1.tvs		=	S13.0E-318-12300-17201		//	SRF 1 HD
+// xmltv:sf2.tvs		=	S13.0E-318-12300-17202		//	SRF zwei HD
+//
+// Türksat (S42.0E)
+// xmltv:cnn-t.tvs		=	S42.0E-66-3-1301			//	CNN TÜRK
+// xmltv:euro-d.tvs		=	S42.0E-66-3-1309			//	EURO D
+// xmltv:shot.tvs		=	S42.0E-1070-32204-13500		//	SHOW TURK
+
+// vim: ts=4 sw=4 noet:
