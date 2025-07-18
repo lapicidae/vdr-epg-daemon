@@ -1,7 +1,7 @@
 [![epgd](epgd-logo.svg)](https://github.com/vdr-projects/vdr-epg-daemon)
 
 epgd - a EPG daemon which fetches the EPG and additional data from various sources (like epgdata, eplists.constabel.net, ...) and provide it to the [epg2vdr](https://github.com/horchi/vdr-plugin-epg2vdr) plugin via a database (MariaDB or MySQL).  
-The epgd obtains the EPG from the sources by plugins. A plugin for [epgData](https://www.epgdata.com), [tvm](https://github.com/3PO/epgd-plugin-tvm/), [xmltv](https://github.com/Zabrimus/epgd-plugin-xmltv) and [tvsp](https://github.com/chriszero/epgd-plugin-tvsp) is contained.  
+The epgd obtains the EPG from the sources by plugins. A plugin for [epgData](https://www.epgdata.com), [tvm](https://github.com/3PO/epgd-plugin-tvm/) and [xmltv](https://github.com/Zabrimus/epgd-plugin-xmltv) is contained.  
 It is designed to handle large amount of data and pictures in a distributed environment with one epg-server and many possible vdr-clients.
 
 
@@ -19,7 +19,7 @@ VDR EPG Daemon docker image based on [debian](https://hub.docker.com/_/debian) o
 
 * regular and timely application updates
 * easy user mappings (PGID, PUID)
-* integrated [tvm](https://github.com/3PO/epgd-plugin-tvm), [xmltv](https://github.com/Zabrimus/epgd-plugin-xmltv) and [tvsp](https://github.com/chriszero/epgd-plugin-tvsp) plugin
+* integrated [tvm](https://github.com/3PO/epgd-plugin-tvm) and [xmltv](https://github.com/Zabrimus/epgd-plugin-xmltv) plugin
 * [scraper](https://github.com/lapicidae/tvs-scraper) for [tvsp](https://m.tvspielfilm.de) mobile website to XMLTV
 * epghttpd webinterface (including mostly german station logos)
 * eMail notifications via [msmtprc](https://marlam.de/msmtp) - a very simple and easy to use SMTP client
@@ -32,7 +32,6 @@ The images are automatically rebuilt when any of the following sources receive a
 * [Ubuntu](https://hub.docker.com/_/ubuntu) Official Docker Image - latest
 * [vdr-epg-daemon](https://github.com/horchi/vdr-epg-daemon) GitHub repository
 * [epgd-plugin-tvm](https://github.com/3PO/epgd-plugin-tvm) GitHub repository
-* [epgd-plugin-tvsp](https://github.com/chriszero/epgd-plugin-tvsp) GitHub repository
 * [epgd-plugin-xmltv](https://github.com/Zabrimus/epgd-plugin-xmltv) GitHub repository
 
 

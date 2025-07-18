@@ -159,7 +159,6 @@ cd vdr-epg-daemon || exit 1
 sed -i 's/CONFDEST     = $(DESTDIR)\/etc\/epgd/CONFDEST     = $(DESTDIR)\/defaults\/config/g' Make.config
 sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
-git clone https://github.com/chriszero/epgd-plugin-tvsp.git ./PLUGINS/tvsp
 git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
 patch PLUGINS/xmltv/Makefile /build/plugin-xmltv_no-clobber.patch
 patch configs/epg.dat /build/epgd-dat-extend-txtrating.patch
