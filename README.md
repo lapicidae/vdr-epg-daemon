@@ -20,7 +20,7 @@ VDR EPG Daemon docker image based on [debian](https://hub.docker.com/_/debian) o
 * regular and timely application updates
 * easy user mappings (PGID, PUID)
 * integrated [tvm](https://github.com/3PO/epgd-plugin-tvm), [xmltv](https://github.com/Zabrimus/epgd-plugin-xmltv) and [tvsp](https://github.com/chriszero/epgd-plugin-tvsp) plugin
-* [scraper](root/usr/local/bin/README.md) for [tvsp](https://m.tvspielfilm.de) mobile website to XMLTV
+* [scraper](https://github.com/lapicidae/tvs-scraper) for [tvsp](https://m.tvspielfilm.de) mobile website to XMLTV
 * epghttpd webinterface (including mostly german station logos)
 * eMail notifications via [msmtprc](https://marlam.de/msmtp) - a very simple and easy to use SMTP client
 * log to file with built-in log rotation

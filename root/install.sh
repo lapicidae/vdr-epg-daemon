@@ -167,8 +167,19 @@ patch configs/epg.dat PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
 #make all install
 make install-epgd install-epghttpd
 
-_ntfy 'get alternative eventsview'
-wget --quiet -P /defaults/config 'https://raw.githubusercontent.com/MegaV0lt/vdr-plugin-skinflatplus/master/contrib/eventsview-flatplus.sql'
+_ntfy 'get tvs-scraper'
+tvsscraperURL='https://github.com/lapicidae/tvs-scraper/'
+tvsscraperLATEST_TAG=$(git ls-remote --tags --sort='v:refname' "$tvsscraperURL" | tail -n 1 | sed 's/.*\trefs\/tags\///')
+git clone --quiet -c advice.detachedHead=false --branch "$tvsscraperLATEST_TAG" --single-branch "$tvsscraperURL" tvs-scraper
+cd tvs-scraper || exit 1
+cp tvs-scraper /usr/local/bin/
+chown root:root /usr/local/bin/tvs-scraper
+chmod 755 /usr/local/bin/tvs-scraper
+cd contrib/vdr-epg-daemon || exit 1
+cp run-tvs-scraper /usr/local/bin/
+chown root:root /usr/local/bin/run-tvs-scraper
+chmod 755 /usr/local/bin/run-tvs-scraper
+cp -rf config/{xmltv.xsl,xmltv-category.xml} /defaults/config/
 
 _ntfy 'get channellogos'
 cd /tmp || exit 1
@@ -187,10 +198,6 @@ chown root:root /usr/local/bin/healthcheck
 chmod 755 /usr/local/bin/healthcheck
 chown root:root /usr/local/bin/svdrpsend
 chmod 755 /usr/local/bin/svdrpsend
-chown root:root /usr/local/bin/run-scraper
-chmod 755 /usr/local/bin/run-scraper
-chown root:root /usr/local/bin/tvs-scraper
-chmod 755 /usr/local/bin/tvs-scraper
 
 _ntfy 'cleanup'
 apt-get purge -qy --auto-remove "${buildPKG[@]}"
