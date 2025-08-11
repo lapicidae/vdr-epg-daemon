@@ -168,7 +168,7 @@ make install-epgd install-epghttpd
 
 _ntfy 'get tvs-scraper'
 tvsscraperURL='https://github.com/lapicidae/tvs-scraper/'
-tvsscraperLATEST_TAG=$(git ls-remote --tags --sort='v:refname' "$tvsscraperURL" | tail -n 1 | sed 's/.*\trefs\/tags\///')
+tvsscraperLATEST_TAG=$(git ls-remote --tags --sort='v:refname' "$tvsscraperURL" | tail -n 1 | sed 's/.*\///; s/\^{}//')
 git clone --quiet -c advice.detachedHead=false --branch "$tvsscraperLATEST_TAG" --single-branch "$tvsscraperURL" tvs-scraper
 cd tvs-scraper || exit 1
 cp tvs-scraper /usr/local/bin/
