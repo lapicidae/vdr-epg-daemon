@@ -1,100 +1,134 @@
-CREATE VIEW eventsview as select cnt_useid useid, cnt_eventid eventid, cnt_channelid channelid, cnt_source source, all_updsp updsp, cnt_updflg updflg, cnt_delflg delflg, cnt_fileref fileref, cnt_tableid tableid, cnt_version version, sub_title title,
-case when sub_shorttext is NULL then
-  concat(
-    case when length(ifnull(sub_category,'')) > 0 then sub_category else '' end,
-    case when length(ifnull(sub_category,'')) > 0 and length(ifnull(sub_genre,'')) > 0 then ' - ' else '' end,
-    case when length(ifnull(sub_genre,'')) > 0 then sub_genre else '' end,
-    case when length(ifnull(sub_genre,'')) > 0 and length(ifnull(sub_country,'')) + length(ifnull(sub_year,'')) > 0 then ' (' else '' end,
-    case when length(ifnull(sub_country,'')) > 0 then sub_country else '' end,
-    case when length(ifnull(sub_country,'')) > 0 and length(ifnull(sub_year,'')) > 0 then ' ' else '' end,
-    case when length(ifnull(sub_year,'')) > 0 then sub_year else '' end,
-    case when length(ifnull(sub_genre,'')) > 0 and length(ifnull(sub_country,'')) + length(ifnull(sub_year,'')) > 0 then ')' else '' end
-  )
-else
-  concat(
-    case when length(ifnull(epi_season,'')) > 0 or length(ifnull(epi_part,'')) > 0 then '(' else '' end,
-    case when length(ifnull(epi_season,'')) > 0 then concat('S',lpad(format(epi_season,0),2,'0')) else '' end,
-    case when length(ifnull(epi_part,'')) > 0 then concat('E', lpad(format(epi_part, 0), 2, '0')) else '' end,
-    case when length(ifnull(epi_part,'')) > 0 or length(ifnull(epi_season,'')) > 0 then ') ' else '' end,
-    case when length(ifnull(epi_partname,'')) > 0 then epi_partname else sub_shorttext end
-  )
-end shorttext,
-case when sub_longdescription is NULL then
-  cnt_longdescription
-else
-  sub_longdescription
-end longdescription,
-case when cnt_source <> sub_source then
-  concat(upper(replace(cnt_source,'vdr','dvb')),'/',upper(sub_source))
-else
-  upper(replace(cnt_source,'vdr','dvb'))
-end mergesource,
-cnt_starttime starttime, cnt_duration duration, cnt_parentalrating parentalrating, cnt_vps vps, cnt_contents contents, replace(
-concat(
-  TRIM(LEADING '|' FROM
-   concat(
-    case when sub_shorttext is NULL then '' else
-      concat(
-        case when length(ifnull(sub_category,'')) > 0 then sub_category else '' end,
-        case when length(ifnull(sub_category,'')) > 0 and length(ifnull(sub_genre,'')) > 0 then ' - ' else '' end,
-        case when length(ifnull(sub_genre,'')) > 0 then sub_genre else '' end,
-        case when length(ifnull(sub_genre,'')) > 0 and length(ifnull(sub_country,'')) + length(ifnull(sub_year,'')) > 0 then ' (' else '' end,
-        case when length(ifnull(sub_country,'')) > 0 then sub_country else '' end,
-        case when length(ifnull(sub_country,'')) > 0 and length(ifnull(sub_year,'')) > 0 then ' ' else '' end,
-        case when length(ifnull(sub_year,'')) > 0 then sub_year else '' end,
-        case when length(ifnull(sub_genre,'')) > 0 and length(ifnull(sub_country,'')) + length(ifnull(sub_year,'')) > 0 then ')' else '' end
-      )
-    end,
-    concat('||',
-      TRIM(LEADING '|' FROM concat(
-        case when sub_shortdescription is NULL then '' else sub_shortdescription end,
-        case when sub_shortreview is NULL then '' else concat('|',sub_shortreview) end,
-        case when sub_tipp is NULL and sub_txtrating is NULL and sub_rating is NULL then '' else '|' end,
-        case when sub_tipp is NULL then '' else concat('|»',upper(sub_tipp),'« ') end,
-        case when sub_txtrating is NULL then '' else case when sub_tipp is NULL then concat('|',sub_txtrating) else sub_txtrating end end,
-        case when sub_rating is NULL then '' else concat('|',regexp_replace(sub_rating,'^ / ','')) end,
-        concat('||',
-          TRIM(LEADING '|' FROM concat(
-            case when sub_topic is NULL then '' else concat('Thema: ',sub_topic) end,
-            case when sub_longdescription is NULL then '' else concat('|',sub_longdescription) end,
-            case when sub_moderator is NULL then '' else concat('|','Moderator: ',sub_moderator) end,
-            case when sub_commentator is NULL then '' else concat('|','Kommentar: ',sub_commentator) end,
-            case when sub_guest is NULL then '' else concat('|','Gäste: ',sub_guest) end,
-            case when sub_genre is NULL then '' else concat('||','Genre: ',sub_genre) end,
-            case when sub_category is NULL then '' else concat('|','Kategorie: ',sub_category) end,
-            case when sub_country is NULL then '' else concat('|','Land: ',sub_country) end,
-            case when sub_year is NULL then '' else concat('|','Jahr: ',substring(sub_year,1,4)) end,
-            case when cnt_parentalrating is NULL or cnt_parentalrating = 0 then '' else concat('||','FSK: ',cnt_parentalrating) end,
-            case when sub_actor is NULL and sub_producer is NULL and sub_other is NULL then '' else '|' end,
-            case when sub_actor is NULL then '' else concat('|','Darsteller: ',sub_actor) end,
-            case when sub_producer is NULL then '' else concat('|','Produzent: ',sub_producer) end,
-            case when sub_other is NULL then '' else concat('|','Sonstige: ',sub_other) end,
-            case when sub_director is NULL and sub_screenplay is NULL and sub_camera is NULL and sub_music is NULL and sub_audio is NULL and sub_flags is NULL then '' else '|' end,
-            case when sub_director is NULL then '' else concat('|','Regie: ',sub_director) end,
-            case when sub_screenplay is NULL then '' else concat('|','Drehbuch: ',sub_screenplay) end,
-            case when sub_camera is NULL then '' else concat('|','Kamera: ',sub_camera) end,
-            case when sub_music is NULL then '' else concat('|','Musik: ',sub_music) end,
-            case when sub_audio is NULL then '' else concat('|','Audio: ',sub_audio) end,
-            case when sub_flags is NULL then '' else concat('|','Flags: ',sub_flags) end,
-            case when epi_episodename is NULL then '' else concat('||','Serie: ',epi_episodename) end,
-            case when epi_shortname is NULL then '' else concat('|','Kurzname: ',epi_shortname) end,
-            case when epi_partname is NULL then '' else concat('|','Episode: ',epi_partname) end,
-            case when epi_extracol1 is NULL then '' else concat('|',epi_extracol1) end,
-            case when epi_extracol2 is NULL then '' else concat('|',epi_extracol2) end,
-            case when epi_extracol3 is NULL then '' else concat('|',epi_extracol3) end,
-            case when epi_season is NULL then '' else concat('|','Staffel: ',cast(epi_season as char)) end,
-            case when epi_part is NULL then '' else concat('|','Staffelfolge: ',cast(epi_part as char)) end,
-            case when epi_part is NULL then '' else concat('|','Staffelfolgen: ',cast(epi_parts as char)) end,
-            case when epi_number is NULL then '' else concat('|','Folge: ',cast(epi_number as char)) end,
-            case when cnt_source <> sub_source then concat('||','Quelle: ',upper(replace(cnt_source,'vdr','dvb')),'/',upper(sub_source)) else concat('||','Quelle: ',upper(replace(cnt_source,'vdr','dvb'))) end
-          ))
-        )
-      ))
-    )
-   )
-  )
+CREATE VIEW eventsview AS
+WITH ShortTextFormatter AS (
+  -- CTE to format the main shorttext part
+  SELECT
+    cnt_useid,
+    cnt_eventid,
+    CONCAT(
+      CASE WHEN LENGTH(IFNULL(sub_category,'')) > 0 THEN sub_category ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_category,'')) > 0 AND LENGTH(IFNULL(sub_genre,'')) > 0 THEN ' - ' ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_genre,'')) > 0 THEN sub_genre ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_genre,'')) > 0 AND LENGTH(IFNULL(sub_country,'')) + LENGTH(IFNULL(sub_year,'')) > 0 THEN ' (' ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_country,'')) > 0 THEN sub_country ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_country,'')) > 0 AND LENGTH(IFNULL(sub_year,'')) > 0 THEN ' ' ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_year,'')) > 0 THEN sub_year ELSE '' END,
+      CASE WHEN LENGTH(IFNULL(sub_genre,'')) > 0 AND LENGTH(IFNULL(sub_country,'')) + LENGTH(IFNULL(sub_year,'')) > 0 THEN ')' ELSE '' END
+    ) AS formatted_shorttext_part
+  FROM useevents
+),
+DescriptionPart1 AS (
+  -- CTE for the first part of the description (short descriptions, rating)
+  SELECT
+    u.cnt_useid,
+    u.cnt_eventid,
+    TRIM(LEADING '|' FROM CONCAT(
+      CASE WHEN u.sub_shortdescription IS NULL THEN '' ELSE u.sub_shortdescription END,
+      CASE WHEN u.sub_shortreview IS NULL THEN '' ELSE CONCAT('|',u.sub_shortreview) END,
+      CASE WHEN u.sub_tipp IS NULL AND u.sub_txtrating IS NULL AND u.sub_rating IS NULL THEN '' ELSE '|' END,
+      CASE WHEN u.sub_tipp IS NULL THEN '' ELSE CONCAT('|»',UPPER(u.sub_tipp),'« ') END,
+      CASE WHEN u.sub_txtrating IS NULL THEN '' ELSE CASE WHEN u.sub_tipp IS NULL THEN CONCAT('|',u.sub_txtrating) ELSE u.sub_txtrating END END,
+      CASE WHEN u.sub_rating IS NULL THEN ''
+           ELSE CONCAT('|', REGEXP_REPLACE(REGEXP_REPLACE(u.sub_rating, '^/ ', ''), ' / ', ' ¦ '))
+      END
+    )) AS part1_content
+  FROM useevents u
+),
+DescriptionPart2 AS (
+  -- CTE for the second part of the description (topic, moderators, genre, country, year, FSK, actors etc.)
+  SELECT
+    u.cnt_useid,
+    u.cnt_eventid,
+    TRIM(LEADING '|' FROM CONCAT(
+      CASE WHEN u.sub_topic IS NULL THEN '' ELSE CONCAT('Thema: ',u.sub_topic) END,
+      CASE WHEN u.sub_longdescription IS NULL THEN '' ELSE CONCAT('|',u.sub_longdescription) END,
+      CASE WHEN u.sub_moderator IS NULL THEN '' ELSE CONCAT('|','Moderator: ',u.sub_moderator) END,
+      CASE WHEN u.sub_commentator IS NULL THEN '' ELSE CONCAT('|','Kommentar: ',u.sub_commentator) END,
+      CASE WHEN u.sub_guest IS NULL THEN '' ELSE CONCAT('|','Gäste: ',u.sub_guest) END,
+      CASE WHEN u.sub_genre IS NULL THEN '' ELSE CONCAT('||','Genre: ',u.sub_genre) END,
+      CASE WHEN u.sub_category IS NULL THEN '' ELSE CONCAT('|','Kategorie: ',u.sub_category) END,
+      CASE WHEN u.sub_country IS NULL THEN '' ELSE CONCAT('|','Land: ',u.sub_country) END,
+      CASE WHEN u.sub_year IS NULL THEN '' ELSE CONCAT('|','Jahr: ',SUBSTRING(u.sub_year,1,4)) END,
+      CASE WHEN u.cnt_parentalrating IS NULL OR u.cnt_parentalrating = 0 THEN '' ELSE CONCAT('||','FSK: ',u.cnt_parentalrating) END,
+      CASE WHEN u.sub_actor IS NULL AND u.sub_producer IS NULL AND u.sub_other IS NULL THEN '' ELSE '|' END,
+      CASE WHEN u.sub_actor IS NULL THEN '' ELSE CONCAT('|','Darsteller: ',u.sub_actor) END,
+      CASE WHEN u.sub_producer IS NULL THEN '' ELSE CONCAT('|','Produzent: ',u.sub_producer) END,
+      CASE WHEN u.sub_other IS NULL THEN '' ELSE CONCAT('|','Sonstige: ',u.sub_other) END,
+      CASE WHEN u.sub_director IS NULL AND u.sub_screenplay IS NULL AND u.sub_camera IS NULL AND u.sub_music IS NULL AND u.sub_audio IS NULL AND u.sub_flags IS NULL THEN '' ELSE '|' END,
+      CASE WHEN u.sub_director IS NULL THEN '' ELSE CONCAT('|','Regie: ',u.sub_director) END,
+      CASE WHEN u.sub_screenplay IS NULL THEN '' ELSE CONCAT('|','Drehbuch: ',u.sub_screenplay) END,
+      CASE WHEN u.sub_camera IS NULL THEN '' ELSE CONCAT('|','Kamera: ',u.sub_camera) END,
+      CASE WHEN u.sub_music IS NULL THEN '' ELSE CONCAT('|','Musik: ',u.sub_music) END,
+      CASE WHEN u.sub_audio IS NULL THEN '' ELSE CONCAT('|','Audio: ',u.sub_audio) END,
+      CASE WHEN u.sub_flags IS NULL THEN '' ELSE CONCAT('|','Flags: ',u.sub_flags) END,
+      CASE WHEN u.epi_episodename IS NULL THEN '' ELSE CONCAT('||','Serie: ',u.epi_episodename) END,
+      CASE WHEN u.epi_shortname IS NULL THEN '' ELSE CONCAT('|','Kurzname: ',u.epi_shortname) END,
+      CASE WHEN u.epi_partname IS NULL THEN '' ELSE CONCAT('|','Episode: ',u.epi_partname) END,
+      CASE WHEN u.epi_extracol1 IS NULL THEN '' ELSE CONCAT('|',u.epi_extracol1) END,
+      CASE WHEN u.epi_extracol2 IS NULL THEN '' ELSE CONCAT('|',u.epi_extracol2) END,
+      CASE WHEN u.epi_extracol3 IS NULL THEN '' ELSE CONCAT('|',u.epi_extracol3) END,
+      CASE WHEN u.epi_season IS NULL THEN '' ELSE CONCAT('|','Staffel: ',CAST(u.epi_season AS CHAR)) END,
+      CASE WHEN u.epi_part IS NULL THEN '' ELSE CONCAT('|','Staffelfolge: ',CAST(u.epi_part AS CHAR)) END,
+      CASE WHEN u.epi_parts IS NULL THEN '' ELSE CONCAT('|','Staffelfolgen: ',CAST(u.epi_parts AS CHAR)) END,
+      CASE WHEN u.epi_number IS NULL THEN '' ELSE CONCAT('|','Folge: ',CAST(u.epi_number AS CHAR)) END,
+      CASE WHEN u.cnt_source <> u.sub_source THEN CONCAT('||','Quelle: ',UPPER(REPLACE(u.cnt_source,'vdr','dvb')),'/',UPPER(u.sub_source)) ELSE CONCAT('||','Quelle: ',UPPER(REPLACE(u.cnt_source,'vdr','dvb'))) END
+    )) AS part2_content
+  FROM useevents u
 )
-,'|', '
-') as description
-from
- useevents;
+SELECT
+  u.cnt_useid useid,
+  u.cnt_eventid eventid,
+  u.cnt_channelid channelid,
+  u.cnt_source source,
+  u.all_updsp updsp,
+  u.cnt_updflg updflg,
+  u.cnt_delflg delflg,
+  u.cnt_fileref fileref,
+  u.cnt_tableid tableid,
+  u.cnt_version version,
+  u.sub_title title,
+  CASE
+    WHEN u.sub_shorttext IS NULL THEN
+      s.formatted_shorttext_part
+    ELSE
+      CONCAT(
+        CASE WHEN LENGTH(IFNULL(u.epi_season,'')) > 0 OR LENGTH(IFNULL(u.epi_part,'')) > 0 THEN '(' ELSE '' END,
+        CASE WHEN LENGTH(IFNULL(u.epi_season,'')) > 0 THEN CONCAT('S',LPAD(CAST(u.epi_season AS CHAR),2,'0')) ELSE '' END,
+        CASE WHEN LENGTH(IFNULL(u.epi_part,'')) > 0 THEN CONCAT('E', LPAD(CAST(u.epi_part AS CHAR), 2, '0')) ELSE '' END,
+        CASE WHEN LENGTH(IFNULL(u.epi_part,'')) > 0 OR LENGTH(IFNULL(u.epi_season,'')) > 0 THEN ') ' ELSE '' END,
+        CASE WHEN LENGTH(IFNULL(u.epi_partname,'')) > 0 THEN u.epi_partname ELSE u.sub_shorttext END
+      )
+  END AS shorttext,
+  CASE
+    WHEN u.sub_longdescription IS NULL THEN
+      u.cnt_longdescription
+    ELSE
+      u.sub_longdescription
+  END AS longdescription,
+  CASE
+    WHEN u.cnt_source <> u.sub_source THEN
+      CONCAT(UPPER(REPLACE(u.cnt_source,'vdr','dvb')),'/',UPPER(u.sub_source))
+    ELSE
+      UPPER(REPLACE(u.cnt_source,'vdr','dvb'))
+  END AS mergesource,
+  u.cnt_starttime starttime,
+  u.cnt_duration duration,
+  u.cnt_parentalrating parentalrating,
+  u.cnt_vps vps,
+  u.cnt_contents contents,
+  -- Merge the prepared parts from the CTEs and remove leading pipes before replacing with newlines
+  REPLACE(
+    TRIM(LEADING '|' FROM CONCAT(
+      CASE WHEN u.sub_shorttext IS NULL THEN '' ELSE s.formatted_shorttext_part END,
+      CASE WHEN p1.part1_content = '' THEN '' ELSE CONCAT('||', p1.part1_content) END,
+      CASE WHEN p2.part2_content = '' THEN '' ELSE CONCAT('||', p2.part2_content) END
+    )),
+    '|', '\n'
+  ) AS description
+FROM
+  useevents u
+JOIN
+  ShortTextFormatter s ON u.cnt_useid = s.cnt_useid AND u.cnt_eventid = s.cnt_eventid
+LEFT JOIN
+  DescriptionPart1 p1 ON u.cnt_useid = p1.cnt_useid AND u.cnt_eventid = p1.cnt_eventid
+LEFT JOIN
+  DescriptionPart2 p2 ON u.cnt_useid = p2.cnt_useid AND u.cnt_eventid = p2.cnt_eventid;
