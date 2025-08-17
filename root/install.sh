@@ -95,11 +95,11 @@ apt-get update -qq
 apt-get upgrade -qy
 
 _ntfy 'install runtime packages'
-apt-get install -qy "${runtimePKG[@]}"
+apt-get install -qy --no-install-recommends "${runtimePKG[@]}"
 [ ! -e '/usr/bin/python' ] && ln -sf "$(which python3)" '/usr/bin/python'
 
 _ntfy 'install build packages'
-apt-get install -qy "${buildPKG[@]}"
+apt-get install -qy --no-install-recommends "${buildPKG[@]}"
 [ ! -e '/usr/bin/python-config' ] && ln -sf "$(which python3-config)" '/usr/bin/python-config'
 
 _ntfy "s6-overlay ($S6VER)"
@@ -141,7 +141,7 @@ ln -s /epgd/channellogos /var/epgd/www/channellogos
 mkdir -p /epgd/log
 
 _ntfy 'SMTP client'
-apt-get install -qy msmtp-mta
+apt-get install -qy --no-install-recommends msmtp-mta
 wget --quiet -O /etc/msmtprc 'https://raw.githubusercontent.com/marlam/msmtp/refs/heads/master/doc/msmtprc-system.example'
 chown root:mail /etc/msmtprc
 chmod 640 /etc/msmtprc
