@@ -49,6 +49,7 @@ runtimePKG=(
     python3
     python3-cssselect
     python3-lxml
+    python3-platformdirs
     python3-portalocker
     python3-requests
     ssmtp
