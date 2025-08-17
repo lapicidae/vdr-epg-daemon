@@ -52,7 +52,6 @@ runtimePKG=(
     python3-platformdirs
     python3-portalocker
     python3-requests
-    ssmtp
     tzdata
     unzip
     uuid
