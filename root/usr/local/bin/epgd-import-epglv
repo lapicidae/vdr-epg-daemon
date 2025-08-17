@@ -1,0 +1,92 @@
+#!/bin/bash
+# /usr/local/bin/epgd-import-epglv
+
+# ----------------------------------------------------------------------------
+# This script is licensed under the GNU General Public License, Version 2.0.
+#
+# Original Source: https://github.com/horchi/vdr-epg-daemon
+# Modified by: Lapicidae (https://github.com/lapicidae)
+# ----------------------------------------------------------------------------
+
+
+# Set common config file path
+common_conf="${common_conf_path:-"/usr/local/etc/epgd-common.sh"}"
+
+if [ ! -r "$common_conf" ]; then
+	echo "ERROR: Config file not found or readable: $common_conf" >&2
+	exit 1
+fi
+
+# Exit on errors, use pipefail, and treat unset variables as an error
+set -euo pipefail
+
+# Source the configuration file
+# shellcheck source=/dev/null
+source "$common_conf"
+
+
+tmp_dir=$(mktemp -d --suffix="_$(basename "$0")")
+
+# Set up signal traps to ensure temporary files are cleaned up on exit.
+trap 'printf "KILLED!\n" warning error; rm -rf "$tmp_dir"; exit 130' INT
+trap 'printf "ERROR!\n" danger error; rm -rf "$tmp_dir"; exit 1' ERR
+trap 'rm -rf "$tmp_dir"' EXIT
+
+
+# Checks the database connection using the provided SQL client.
+check_db_connection() {
+	local sql_client="$1"
+	if ! $sql_client "SELECT 1;" &> /dev/null; then
+		printf 'ERROR: Authentication failed or MySQL server is not running at host %s. Please verify your password and host.\n' "$MYSQL_HOST" >&2
+		return 1
+	fi
+	return 0
+}
+
+# Checks database root authentication and establishes the connection.
+check_db_root_password () {
+	local password=${1:-""}
+
+	# Check if a password file exists or prompt the user for a password.
+	if [ -r ~/.my.cnf ]; then
+		db_root_command="${DB_CLIENT} --host=${MYSQL_HOST} --port=${MYSQL_PORT} --user=root -e"
+	else
+		if [ -z "$password" ]; then
+			printf '\nPlease enter the root password for the MySQL database (input will not be displayed):\n'
+			read -s -r password
+			printf '\n'
+		fi
+
+		if [ -z "$password" ]; then
+			printf 'The password was not entered. Abort.\n'
+			exit 1
+		else
+			# Create a temporary file within the temporary directory and write the password.
+			# This is a safe method to avoid the use of environment variables.
+			local tmp_pass_file="$tmp_dir"/root.cnf
+			printf '[client]\nuser=root\npassword=%s\n' "$password" > "$tmp_pass_file"
+			chmod 600 "$tmp_pass_file"
+			db_root_command="${DB_CLIENT} --defaults-extra-file=${tmp_pass_file} --host=${MYSQL_HOST} --port=${MYSQL_PORT} -e"
+		fi
+	fi
+
+	# Checks if the database connection is successful.
+	# This also checks if the database is running.
+	if ! check_db_connection "$db_root_command"; then
+		exit 1
+	fi
+}
+
+
+# Call the function to check for root authentication
+check_db_root_password
+
+# Use the newly established sql_root variable for all database operations
+$db_root_command "DROP FUNCTION IF EXISTS epglv;"
+$db_root_command "DROP FUNCTION IF EXISTS epglvr;"
+$db_root_command "CREATE FUNCTION epglv RETURNS INT SONAME 'mysqlepglv.so';"
+$db_root_command "CREATE FUNCTION epglvr RETURNS INT SONAME 'mysqlepglv.so';"
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

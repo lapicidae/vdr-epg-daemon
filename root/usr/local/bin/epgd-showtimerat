@@ -1,0 +1,50 @@
+#!/bin/bash
+# /usr/local/bin/epgd-showtimerat
+
+# ----------------------------------------------------------------------------
+# This script is licensed under the GNU General Public License, Version 2.0.
+#
+# Original Source: https://github.com/horchi/vdr-epg-daemon
+# Modified by: Lapicidae (https://github.com/lapicidae)
+# ----------------------------------------------------------------------------
+
+
+# Set common config file path
+common_conf="${common_conf_path:-"/usr/local/etc/epgd-common.sh"}"
+
+if [ ! -r "$common_conf" ]; then
+	echo "ERROR: Config file not found or readable: $common_conf" >&2
+	exit 1
+fi
+
+# Exit on errors, use pipefail, and treat unset variables as an error
+set -euo pipefail
+
+# Source the configuration file
+# shellcheck source=/dev/null
+source "$common_conf"
+
+
+# Check if the required arguments are provided
+if [ "$#" -lt 2 ]; then
+	printf 'ERROR: Missing arguments. Please provide a timestamp and VDR name.\n' >&2
+	printf '\tUsage: %s <timestamp> <vdr_name>\n' "$0" >&2
+	printf '\tExample: %s "%s" VDR1\n' "$0" "$(date +'%Y-%m-%d %H:%M')" >&2
+	exit 1
+fi
+
+$DB_USER_COMMAND " \
+select t.id, SUBSTRING_INDEX(t.channelid, '-', 3) as transponder, v.name, t.source, t.channelid, t.state as S, \
+		from_unixtime(t.day + t.starttime div 100 * 60 * 60 + t.starttime % 100 * 60) as start, \
+		from_unixtime(t.day + t.endtime div 100 * 60 * 60 + t.endtime % 100 * 60) as end \
+	from \
+		timers t left outer join events e on (t.eventid = e.masterid), vdrs v  \
+	where \
+		v.uuid = t.vdruuid and t.active = 1 and t.state in ('P','R') \
+		and ('$1' between from_unixtime(t.day + t.starttime div 100 * 60 * 60 + t.starttime % 100 * 60) and from_unixtime(t.day + t.endtime div 100 * 60 * 60 + t.endtime % 100 * 60)) \
+		and  v.name = '$2' \
+	order by t.day, start;"
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

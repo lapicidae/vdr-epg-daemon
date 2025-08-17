@@ -1,0 +1,16 @@
+--- Makefile.old	2025-08-12 18:12:28.080086116 +0200
++++ Makefile	2025-08-17 23:56:25.814294621 +0200
+@@ -193,9 +193,10 @@
+ 		mkdir -p $(_BINDEST); \
+ 	   chmod a+rx $(_BINDEST); \
+ 	fi
+-	install -D ./scripts/epgd-*[!~] $(_BINDEST)/
+-	install -D ./scripts/epgh-*[!~] $(_BINDEST)/
+-	install -D ./scripts/epgsearchdone.pl $(_BINDEST)/
++	cp -n ./scripts/epgd-*[!~] $(_BINDEST)/
++	cp -n ./scripts/epgh-*[!~] $(_BINDEST)/
++	cp -n ./scripts/epgsearchdone.pl $(_BINDEST)/
++	chmod a+rx $(_BINDEST)/*
+ 
+ install-http:
+ 	(cd "http/" && make install)

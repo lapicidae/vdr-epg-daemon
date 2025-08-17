@@ -35,6 +35,7 @@ _ntfy 'prepare'
 runtimePKG=(
     at
     bsd-mailx
+    curl
     libarchive13
     libcurl4
     libimlib2
@@ -73,7 +74,6 @@ buildPKG=(
     libxslt1-dev
     python3-dev
     uuid-dev
-    wget
     zlib1g-dev
 )
 if [ "$baseIMAGE" = 'ubuntu' ]; then
@@ -142,12 +142,13 @@ mkdir -p /epgd/log
 
 _ntfy 'SMTP client'
 apt-get install -qy --no-install-recommends msmtp-mta
-wget --quiet -O /etc/msmtprc 'https://raw.githubusercontent.com/marlam/msmtp/refs/heads/master/doc/msmtprc-system.example'
+# wget --quiet -O /etc/msmtprc 'https://raw.githubusercontent.com/marlam/msmtp/refs/heads/master/doc/msmtprc-system.example'
+curl --silent --output /etc/msmtprc 'https://raw.githubusercontent.com/marlam/msmtp/refs/heads/master/doc/msmtprc-system.example'
 chown root:mail /etc/msmtprc
 chmod 640 /etc/msmtprc
 usermod -a -G mail epgd
 
-_ntfy "compile ${epgdVersion}"
+_ntfy "compile EPGd ${epgdVersion}"
 cd /tmp || exit 1
 epgdREPO='https://github.com/horchi/vdr-epg-daemon.git'
 if [ "$EPGD_DEV" = 'true' ]; then
@@ -161,10 +162,11 @@ sed -i 's/CONFDEST     = $(DESTDIR)\/etc\/epgd/CONFDEST     = $(DESTDIR)\/defaul
 sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
 git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
+patch Makefile /build/epgd-scripts_no_clobber.patch
 patch PLUGINS/xmltv/Makefile /build/plugin-xmltv_no-clobber.patch
 patch configs/epg.dat /build/epgd-dat-extend-txtrating.patch
 patch configs/epg.dat PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
-#make all install
+# make all install
 make install-epgd install-epghttpd
 
 _ntfy 'get tvs-scraper'
@@ -193,16 +195,38 @@ _ntfy 'change permissions'
 chown -R epgd:epgd /defaults
 chown -R epgd:epgd /epgd
 chown -R sysllog:sysllog /epgd/log
-chown root:root /usr/local/bin/contenv2env
-chmod 755 /usr/local/bin/contenv2env
-chown root:root /usr/local/bin/healthcheck
-chmod 755 /usr/local/bin/healthcheck
-chown root:root /usr/local/bin/svdrpsend
-chmod 755 /usr/local/bin/svdrpsend
+
+chown root:root /usr/local/etc/epgd-common.sh
+chmod 644 /usr/local/etc/epgd-common.sh
+
+# batch processing for newly added files in '/usr/local/bin'
+declare -a binFILES=(
+    "contenv2env"
+    "epgd-conflictsof"
+    "epgd-dropall"
+    "epgd-import-epglv"
+    "epgd-ls-channelids"
+    "epgd-showdones"
+    "epgd-showmerge"
+    "epgd-showtimer"
+    "epgd-showtimerat"
+    "epgd-tool"
+    "healthcheck"
+    "svdrpsend"
+)
+
+usr_local_bin='/usr/local/bin'
+
+for _file in "${binFILES[@]}"; do
+    if [[ -f "${usr_local_bin}/${_file}" ]]; then
+        chown root:root "${usr_local_bin}/${_file}"
+        chmod 755 "${usr_local_bin}/${_file}"
+    fi
+done
 
 _ntfy 'cleanup'
 apt-get purge -qy --auto-remove "${buildPKG[@]}"
-#dpkg -l | grep "\-dev" | sed 's/ \+ /|/g' | cut -d '|' -f 2 | cut -d ':' -f 1 | xargs apt-get purge --auto-remove -qy
+# dpkg -l | grep "\-dev" | sed 's/ \+ /|/g' | cut -d '|' -f 2 | cut -d ':' -f 1 | xargs apt-get purge --auto-remove -qy
 apt-get clean
 rm -rf \
     /build \
@@ -220,3 +244,7 @@ fi
 
 _ntfy 'all done'
 printf '\e[32;1;2m>>> DONE! <<<\e[m\n'
+
+
+# vim: ts=4 sw=4 et:
+# kate: space-indent on; indent-width 4; mixed-indent off;

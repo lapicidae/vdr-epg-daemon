@@ -1,0 +1,511 @@
+#!/bin/bash
+# /usr/local/bin/epgd-tool
+
+# ----------------------------------------------------------------------------
+# MySQL helper script
+#
+# This script is licensed under the GNU General Public License, Version 2.0.
+#
+# Original Autor: 3PO (https://github.com/3PO)
+# Modified by: Lapicidae (https://github.com/lapicidae)
+# Updated on: 2025-08-17
+# ----------------------------------------------------------------------------
+
+
+# Set common config file path
+common_conf="${common_conf_path:-"/usr/local/etc/epgd-common.sh"}"
+
+if [ ! -r "$common_conf" ]; then
+	echo "ERROR: Config file not found or readable: $common_conf" >&2
+	exit 1
+fi
+
+# Exit on errors, use pipefail, and treat unset variables as an error
+set -euo pipefail
+
+# Source the configuration file
+# shellcheck source=/dev/null
+source "$common_conf"
+
+
+# Check if the script is run as root and set a flag.
+if [[ $EUID -ne 0 ]]; then
+	admin_mode=0
+else
+	admin_mode=1
+	printf "\e[1;33m[WARNING]\e[0m This script is executed as root! \e[1;33m[WARNING]\e[0m\n"
+fi
+
+# Assign values from environment variables or set defaults.
+mysql_host=${MYSQL_HOST:-localhost}
+mysql_port=${MYSQL_PORT:-0}
+epgd_conf=${EPGD_CONF:-"/etc/epgd/epgd.conf"}
+epgd_host=${EPGD_HOST:-localhost}
+epgd_db=${EPGDB:-epg2vdr}
+epgd_user=${EPGDB_USER:-epg2vdr}
+epgd_pw=${MYSQL_PWD:-epg}
+
+# Create a temporary directory and file
+tmp_dir=$(mktemp -d --suffix="_$(basename "$0")")
+tmp_file=$(mktemp "$tmp_dir"/tmp.XXXXXX)
+
+# Determine the correct database client (MariaDB or MySQL).
+db_client=$(command -v mariadb || command -v mysql)
+
+if [[ "$db_client" == *"mariadb"* ]]; then
+	db_server="mariadb"
+else
+	db_server="mysqld"
+fi
+
+# The MySQL/MariaDB database server configuration file.
+distri="$(grep "^NAME=" /etc/os-release |cut -d "=" -f2 | sed -e "s/\"//g")"
+
+my_cnf=${my_cnf:-"/etc/mysql/my.cnf"}
+if [ "$distri" == 'Fedora' ] || [ "$distri" == 'Arch Linux' ]; then
+	my_cnf='/etc/my.cnf'
+fi
+
+# Construct the common SQL command prefix.
+if [ "$mysql_port" -ne 0 ] && [ "$mysql_port" -ne 3306 ]; then
+	# sql_epg2vdr="${db_client} --host=${mysql_host} --port=${mysql_port} --user=${epgd_user} --password=${epgd_pw} --database=${epgd_db} --skip-ssl -e"
+	sql_epg2vdr="${db_client} --host=${mysql_host} --port=${mysql_port} --user=${epgd_user} --password=${epgd_pw} --database=${epgd_db} -e"
+else
+	sql_epg2vdr="${db_client} --host=${mysql_host} --user=${epgd_user} --database=${epgd_db} -e"
+fi
+
+# The usage function displays the script's help message.
+usage() {
+	printf '\n'
+	printf 'MySQL helper script by 3PO (revised by Lapicidae)\n'
+	printf '\n'
+	printf ' usage: [-new-db] [-new-u] [-del-db] [-del-u] [ -del-all] [-show] [-fix-cnf] [-drop-view] [-drop-all] [-drop-pics] [-check-events] [-check-pic] [-show-stats] [-show-size] [-apikey]\n'
+	printf '\n'
+	printf ' -new-db         Create new Database for epg2vdr (%s)\n' "${epgd_db}"
+	printf ' -new-u          Create new User for epg2vdr (%s)\n' "${epgd_user}"
+	printf ' -del-db         Delete EPGd Database (%s)\n' "${epgd_db}"
+	printf ' -del-u          Delete User %s\n' "${epgd_user}"
+	printf ' -del-all        Delete EPGd Database (%s) and User %s\n' "${epgd_db}" "${epgd_user}"
+	printf ' -show           Shows GRANTS for %s and list Databases and Users\n' "${epgd_db}"
+	printf ' -fix-cnf        Disable "bind-address" in %s\n' "${my_cnf}"
+	printf ' -drop-all       Drop all Tables in %s Database\n' "${epgd_db}"
+	printf ' -drop-view      Drop Table "eventsview" in Database\n'
+	printf ' -drop-pics      Delete all Pictures from EPGd Database (%s)\n' "${epgd_db}"
+	printf ' -check-events   Shows quantity of Events in Database imported per source\n'
+	printf ' -check-pic      Shows quantity of EPG Pictures stored in Database\n'
+	printf ' -show-stats     Shows the Stats and Versions of EPGd and the connected VDRs\n'
+	printf ' -show-size      Shows the Size of the Tables in the EPGd Database (%s)\n' "${epgd_db}"
+	printf ' -apikey         Checks the validity of the API key for https://www.themoviedb.org\n'
+	printf '\n'
+}
+
+# Check if any command-line arguments were provided. If not, show usage and exit.
+if [ "$#" -eq 0 ]; then
+	usage
+	exit 1
+fi
+
+# Set up signal traps to ensure temporary files are cleaned up on exit.
+trap 'printf "KILLED!\n" warning error; rm -rf "$tmp_dir"; exit 130' INT
+trap 'printf "ERROR!\n" danger error; rm -rf "$tmp_dir"; exit 1' ERR
+trap 'rm -rf "$tmp_dir"' EXIT
+
+# Manage services using systemd, upstart, SysVinit, or s6.
+service_man() {
+	local instruction service init_cmd_start init_cmd_stop init_cmd_restart
+
+	service=$1
+	instruction=$2
+
+	if [ $admin_mode -ne 1 ]; then
+		printf '\nWARNING:\n\tThe programme "%s" cannot be %sed automatically in user mode.\n\tPerform this manually if problems arise, or run this script with root privileges.\n' "$service" "$instruction"
+		return 0
+	fi
+
+	if command -v systemctl &>/dev/null; then         # systemd
+		if ! systemctl list-unit-files --type=service | grep -Fq "${service}.service"; then
+			printf 'WARNING: systemd service "%s" not found.\n' "$service" >&2
+			return 0
+		fi
+		init_cmd_start=("systemctl" "start" "${service}")
+		init_cmd_stop=("systemctl" "stop" "${service}")
+		init_cmd_restart=("systemctl" "restart" "${service}")
+
+	elif command -v initctl &>/dev/null; then         # upstart
+		if ! [ -e "/etc/init/${service}.conf" ]; then
+			printf 'WARNING: Upstart service "%s" not found.\n' "$service" >&2
+			return 0
+		fi
+			init_cmd_start=("/sbin/start" "${service}")
+		init_cmd_stop=("/sbin/stop" "${service}")
+		init_cmd_restart=("/sbin/restart" "${service}")
+
+	elif command -v service &>/dev/null; then         # SysVinit
+		if ! [ -e "/etc/init.d/${service}" ]; then
+			printf 'WARNING: SysVinit service "%s" not found.\n' "$service" >&2
+			return 0
+		fi
+		init_cmd_start=("/etc/init.d/${service}" "start")
+		init_cmd_stop=("/etc/init.d/${service}" "stop")
+		init_cmd_restart=("/etc/init.d/${service}" "restart")
+
+	elif command -v s6-svc &>/dev/null; then          # s6
+		if ! [ -d "/run/service/${service}" ]; then
+			printf 'WARNING: s6 service "%s" not found.\n' "$service" >&2
+			return 0
+		fi
+		init_cmd_start=("s6-svc" "-u" "/run/service/${service}")
+		init_cmd_stop=("s6-svc" "-d" "/run/service/${service}")
+		init_cmd_restart=("s6-svc" "-r" "/run/service/${service}")
+
+	else
+		printf 'WARNING: No supported init system found.\n' >&2
+		return 0
+	fi
+
+	case "$instruction" in
+		start)
+			if ! pidof "$service" >/dev/null 2>&1; then
+				"${init_cmd_start[@]}"
+			fi
+		;;
+		stop)
+			if pidof "$service" >/dev/null 2>&1; then
+				"${init_cmd_stop[@]}"
+			fi
+		;;
+		restart)
+			"${init_cmd_restart[@]}"
+		;;
+		*)
+			printf 'ERROR: Invalid action: %s\n' "$instruction" >&2
+			exit 1
+		;;
+	esac
+}
+
+# Sets the password for the epg2vdr user.
+set_epgd_password() {
+	export MYSQL_PWD="${epgd_pw}"
+}
+
+# Checks the database connection using the provided SQL client.
+check_db_connection() {
+	local sql_client="$1"
+	if ! $sql_client "SELECT 1;" &> /dev/null; then
+		printf 'ERROR: Authentication failed or MySQL server is not running at host %s. Please verify your password and host.\n' "$mysql_host" >&2
+		return 1
+	fi
+	return 0
+}
+
+# Checks database root authentication and establishes the connection.
+check_db_root_password () {
+	local password=${1:-""}
+	
+	# Check if a password file exists or prompt the user for a password.
+	if [ -r ~/.my.cnf ]; then
+		sql_root="${db_client} --host=${mysql_host} --port=${mysql_port} --user=root -e"
+	else
+		if [ -z "$password" ]; then
+			printf '\nPlease enter the root password for the MySQL database (input will not be displayed):\n'
+			read -s -r password
+			printf '\n'
+		fi
+
+		if [ -z "$password" ]; then
+			printf 'The password was not entered. Abort.\n'
+			exit 1
+		else
+			# Create a temporary file within the temporary directory and write the password.
+			# This is a safe method to avoid the use of environment variables.
+			local tmp_pass_file="$tmp_dir"/root.cnf
+			printf '[client]\nuser=root\npassword=%s\n' "$password" > "$tmp_pass_file"
+			chmod 600 "$tmp_pass_file"
+			sql_root="${db_client} --defaults-extra-file=${tmp_pass_file} --host=${mysql_host} --port=${mysql_port} -e"
+		fi
+	fi
+
+	# Checks if the database connection is successful.
+	# This also checks if the database is running.
+	if ! check_db_connection "$sql_root"; then
+		exit 1
+	fi
+}
+
+# Helper function to check if a hostname is a local address.
+is_local_host() {
+	local host_to_check="$1"
+	# Check for localhost and loopback address
+	if [ "$host_to_check" == "localhost" ] || [ "$host_to_check" == "127.0.0.1" ]; then
+		return 0
+	fi
+
+	# Check against all local IP addresses of the machine
+	local local_ips
+	# Use 'hostname -I' or 'ip a' to get all local IPs
+	if command -v hostname >/dev/null 2>&1; then
+		local_ips=$(hostname -I)
+	else
+		local_ips=$(ip a | grep -oP 'inet \K[\d.]+')
+	fi
+
+	# Resolve the provided host to an IP address
+	local resolved_ip
+	resolved_ip=$(getent hosts "$host_to_check" | awk '{ print $1 }' | head -n 1)
+
+	# Check if the resolved IP is one of the local IPs
+	for ip in $local_ips; do
+		if [ "$resolved_ip" == "$ip" ]; then
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+# Helper function to manage a service if its host is local.
+manage_service_if_local() {
+	local service_name="$1"
+	local action="$2"
+
+	case "$service_name" in
+		"${db_server}")
+			if is_local_host "$mysql_host"; then
+				service_man "$service_name" "$action"
+			fi
+		;;
+		"epgd")
+			if is_local_host "$epgd_host"; then
+				service_man "$service_name" "$action"
+			fi
+		;;
+		*)
+			service_man "$service_name" "$action"
+		;;
+	esac
+}
+
+# Delete the entire EPGd database.
+delete_db () {
+	manage_service_if_local "epgd" "stop"
+	check_db_root_password
+	$sql_root "DROP DATABASE ${epgd_db};"
+}
+
+# Delete the EPGd user.
+delete_user () {
+	manage_service_if_local "epgd" "stop"
+	check_db_root_password
+	$sql_root "DROP USER ${epgd_db};"
+}
+
+# Drop the 'images' table from the database.
+drop_pics () {
+	set_epgd_password
+	$sql_epg2vdr "DROP TABLE images;"
+}
+
+# Delete both the database and the user.
+delete_all () {
+	manage_service_if_local "${db_server}" "start"
+	manage_service_if_local "epgd" "stop"
+	check_db_root_password
+	$sql_root "DROP DATABASE ${epgd_db};"
+	$sql_root "DROP USER ${epgd_db};"
+}
+
+# Drop the 'eventsview' view.
+drop_view () {
+	manage_service_if_local "${db_server}" "start"
+	manage_service_if_local "epgd" "stop"
+	set_epgd_password
+	$sql_epg2vdr "DROP VIEW eventsview;"
+	manage_service_if_local "epgd" "start"
+}
+
+# Drop all tables from the database.
+drop_all () {
+	manage_service_if_local "${db_server}" "start"
+	manage_service_if_local "epgd" "stop"
+	set_epgd_password
+	$sql_epg2vdr "SHOW TABLES" |grep -v images > "$tmp_file"
+
+	while read -r table; do
+			$sql_epg2vdr "DROP TABLE IF EXISTS $table;"
+	done < "$tmp_file"
+
+	rm -f "$tmp_file"
+
+	manage_service_if_local "epgd" "start"
+	printf '\nDelete all EPG Pictures from EPGd Database (%s)?\n' "$epgd_db"
+	confirm_action drop_pics
+}
+
+# Prompts the user for confirmation before executing an action.
+confirm_action() {
+	local func="$1"
+	while true; do
+		printf 'Are you sure? [yes/no]: '
+		read -r choice
+		printf '\n'
+		case "$choice" in
+			[yY]|[yY][eE][sS]) "$func"; break ;;
+			[nN]|[nN][oO]) printf '\nScript aborted by user\n'; exit 1 ;;
+			*) printf 'Please enter "yes" or "no".\n' ;;
+		esac
+	done
+}
+
+# Main script logic: handle command-line arguments.
+case $1 in
+
+	-new-db|new-db)
+		manage_service_if_local "${db_server}" "start"
+		check_db_root_password
+		$sql_root "CREATE DATABASE ${epgd_db} charset utf8;"
+		$sql_root "DROP FUNCTION IF EXISTS epglv;"
+		$sql_root "DROP FUNCTION IF EXISTS epglvr;"
+		$sql_root "CREATE FUNCTION epglv RETURNS INT SONAME 'mysqlepglv.so';"
+		$sql_root "CREATE FUNCTION epglvr RETURNS INT SONAME 'mysqlepglv.so';"
+		exit
+	;;
+
+	-new-u|new-u)
+		manage_service_if_local "${db_server}" "start"
+		check_db_root_password
+		$sql_root "CREATE USER '${epgd_user}'@'%' IDENTIFIED BY '${epgd_pw}';"
+		$sql_root "GRANT ALL PRIVILEGES ON ${epgd_db}.* TO '${epgd_user}'@'%' IDENTIFIED BY 'epg';"
+		$sql_root "GRANT ALL PRIVILEGES ON ${epgd_db}.* TO '${epgd_user}'@'localhost' IDENTIFIED BY 'epg';"
+		$sql_root "FLUSH PRIVILEGES;"
+		exit
+	;;
+
+	-del-db|del-db)
+		printf '\nDelete the entire epg2vdr database (%s)?\n' "$epgd_db"
+		confirm_action delete_db
+	;;
+
+	-del-u|del-u)
+		printf '\nDelete the User %S?\n' "$epgd_user"
+		confirm_action delete_user
+	;;
+
+	-del-all|del-all)
+		printf '\nDelete the complete EPGd Database (%s) and User %s?\n' "${epgd_db}" "${epgd_user}"
+		confirm_action delete_all
+	;;
+
+	-show|show)
+		manage_service_if_local "${db_server}" "start"
+		check_db_root_password
+		set_epgd_password
+		$sql_root "SELECT User,Host,Db FROM mysql.db;"
+		$sql_root "SHOW GRANTS FOR '${epgd_user}'@'%';"
+		$sql_root "SHOW DATABASES;"
+		$sql_epg2vdr "SHOW TABLES;"
+		exit
+	;;
+
+	-fix-cnf|fix-cnf)
+		if [ ! -f "$my_cnf" ]; then
+			printf 'ERROR: "%s" does not exist\n' "$my_cnf" >&2
+			exit 1
+		elif [ -w "$my_cnf" ]; then
+			check_db_root_password
+			$sql_root "Flush LOGS;"
+			$sql_root "RESET MASTER;"
+			sed -i "$my_cnf" -e "s/^bind-address/# bind-address/"
+			sed -i "$my_cnf" -e "s/^log-bin/# log-bin/"
+			manage_service_if_local "${db_server}" "restart"
+			manage_service_if_local "epgd" "restart"
+		else
+			printf 'ERROR: "%s" is not writable for the current user!\n' "$my_cnf" >&2
+			exit 1
+		fi
+		exit
+	;;
+
+	-drop-view|drop-view|-dropview|dropview)
+		printf '\nDrop all Views from database?\n'
+		confirm_action drop_view
+	;;
+
+	-drop-all|drop-all)
+		printf '\nClean the complete EPGd Database (%s)?\n' "$epgd_db"
+		confirm_action drop_all
+	;;
+
+	-check-events|check-events)
+		set_epgd_password
+		$sql_epg2vdr "SELECT count(1) AS Events, source FROM events group by source;"
+		exit
+	;;
+
+	-check-pic|check-pic)
+		set_epgd_password
+		$sql_epg2vdr "SELECT count(1) AS Pictures FROM images WHERE image IS NOT NULL;"
+		exit
+	;;
+	
+	-show-stats|show-stats)
+		set_epgd_password
+		$sql_epg2vdr "SELECT version, dbapi, master, ip, state, FROM_UNIXTIME(updsp,'%D %M %Y% %H:%i:%s') AS 'last touch', FROM_UNIXTIME(lastupd, '%D %M %Y% %H:%i:%s') AS 'last download', FROM_UNIXTIME(nextupd,'%D %M %Y% %H:%i:%s') AS 'next download' FROM vdrs ;"
+		exit
+	;;
+
+	-show-size|show-size)
+		set_epgd_password
+		$sql_epg2vdr "SELECT table_schema AS 'Database', ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size in MB' FROM information_schema.TABLES  GROUP BY table_schema;"
+		printf '\n'
+		$sql_epg2vdr "SELECT table_name AS 'Tables', ROUND(((data_length + index_length) / 1024 / 1024), 2) 'Size in MB' FROM information_schema.TABLES WHERE table_schema = \"${epgd_db}\" ORDER BY (data_length + index_length) DESC;"
+		exit
+	;;
+
+	-drop-pics|drop-pics)
+		printf '\nDelete all EPG Pictures from EPGd Database (%s)?\n' "$epgd_db"
+		confirm_action drop_pics
+	;;
+
+	-apikey|apikey)
+		if [ ! -f "$epgd_conf" ]; then
+			printf '\n %s -> File not found!\n' "$epgd_conf"
+			exit 1
+		fi
+		# Check if curl or wget is present.
+		http_client=""
+		if command -v curl >/dev/null 2>&1; then
+			http_client="curl -s"
+		elif command -v wget >/dev/null 2>&1; then
+			http_client="wget -q -O -"
+		else
+			printf '\nERROR: Neither "curl" nor "wget" found. Please install one of these tools.\n' >&2
+			exit 1
+		fi
+		
+		tmdb_api_key="$(grep ScrapMovieDbApiKey "$epgd_conf" | sed -E 's/ScrapMovieDbApiKey *= *(.*)/\1/')"
+		tmdb_movie_id='550'
+		tmdb_api_url="https://api.themoviedb.org/3/movie/${tmdb_movie_id}?"
+
+		# Search for a positive indicator that the response is valid.
+		if $http_client "${tmdb_api_url}api_key=${tmdb_api_key}" | grep -q "\"id\":${tmdb_movie_id}"; then
+			printf '\n Your API key is valid: -> "%s"\n' "$tmdb_api_key"
+		else
+			printf '\n Invalid API key: You must be granted a valid key\n'
+		fi
+	;;
+
+	-h|help|-help)
+		usage
+	;;
+
+	*)
+		usage
+		exit 1
+	;;
+
+esac
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

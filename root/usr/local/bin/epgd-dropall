@@ -1,0 +1,203 @@
+#!/bin/bash
+# /usr/local/bin/epgd-dropall
+
+# ----------------------------------------------------------------------------
+# This script is licensed under the GNU General Public License, Version 2.0.
+#
+# Original Source: https://github.com/horchi/vdr-epg-daemon
+# Modified by: Lapicidae (https://github.com/lapicidae)
+# ----------------------------------------------------------------------------
+
+
+# Set common config file path
+common_conf="${common_conf_path:-"/usr/local/etc/epgd-common.sh"}"
+
+if [ ! -r "$common_conf" ]; then
+	echo "ERROR: Config file not found or readable: $common_conf" >&2
+	exit 1
+fi
+
+# Exit on errors, use pipefail, and treat unset variables as an error
+set -euo pipefail
+
+# Source the configuration file
+# shellcheck source=/dev/null
+source "$common_conf"
+
+
+# Helper function for yes/no confirmation
+confirm() {
+	printf '%s [y/N] ' "$1"
+	read -r -n 1 c
+	printf '\n'
+	# Return 0 for 'y' (success) or 1 for anything else (failure).
+	[[ "$c" == "y" ]]
+}
+
+# Helper function to print a boxed header
+print_box_header() {
+	local text="$1"
+	local len=${#text}
+	local top_bottom_line=""
+	# Create the top/bottom line with the correct length
+	for ((i=0; i<len+4; i++)); do
+		top_bottom_line="${top_bottom_line}─"
+	done
+	printf '┌%s┐\n' "$top_bottom_line"
+	printf '│  %s  │\n' "$text"
+	printf '└%s┘\n' "$top_bottom_line"
+}
+
+print_box_header "Drop tables of logon ${EPGDB_USER}@${EPGDB}"
+printf 'This tables contain data which is restored automatically \n'
+printf ' by downloading from internet and via the dvb stream and from your vdrs\n'
+
+# Array of main tables to be dropped
+declare -a tables=(
+	'events'
+	'useevents'
+	'fileref'
+	'imagerefs'
+	'channelmap'
+	'episodes'
+	'components'
+	'recordingdirs'
+	'recordinglist'
+	'vdrs'
+	'analyse'
+	'snapshot'
+)
+
+# Array of views to be dropped
+declare -a views=(
+	'eventsview'
+	'eventsviewplain'
+)
+
+if confirm "Are you sure?"; then
+	SQL_DROP_TABLES="DROP TABLE IF EXISTS $(IFS=','; echo "${tables[*]}") CASCADE;"
+	SQL_DROP_VIEWS="DROP VIEW IF EXISTS $(IFS=','; echo "${views[*]}") CASCADE;"
+	
+	$DB_USER_COMMAND "$SQL_DROP_TABLES $SQL_DROP_VIEWS"
+
+	printf 'Now you have two choices for timers and timersdone (only the pending ones):\n'
+	printf ' 1. Automatic (without dropping the timers table):\n'
+	printf '      All created timers will be marked for delete action to force VDRs to remove them\n'
+	printf ' 2. Drop table timers - you have to cleanup the timers.conf of your VDRs by hand\n'
+	printf ' \n'
+	printf 'In both cases all still pending timers will removed from timersdone to force epgd to create it again!\n'
+	printf ' \n'
+
+	if confirm "Proceed with 1 (otherwise 2 will be done)?"; then
+		$DB_USER_COMMAND "update timers set action = 'D' where state in ('P', 'R');"
+	else
+		$DB_USER_COMMAND 'drop table if exists timers;'
+	fi
+
+	$DB_USER_COMMAND "delete from timersdone where state in ('C', 'Q');"
+
+	printf '\n'
+	printf 'Tables dropped!\n'
+fi
+
+print_box_header "Drop procedures"
+
+# Array of procedures and functions to be dropped
+declare -a procs=(
+	'reverseepg'
+	'mergeepg'
+)
+declare -a funcs=(
+	'getupdflg'
+	'getcrosslvr'
+	'getlvrmin'
+)
+
+if confirm "Are you sure?"; then
+	SQL_DROP_PROCS="DROP PROCEDURE IF EXISTS $(IFS=','; echo "${procs[*]}") CASCADE;"
+	SQL_DROP_FUNCS="DROP FUNCTION IF EXISTS $(IFS=','; echo "${funcs[*]}") CASCADE;"
+	
+	$DB_USER_COMMAND "$SQL_DROP_PROCS $SQL_DROP_FUNCS"
+
+	printf '\n'
+	printf 'Procedures and Functions dropped!\n'
+fi
+
+print_box_header "Drop images"
+printf 'In most cases you do not need to drop the image table.\n'
+
+if confirm "Drop image tables?"; then
+	$DB_USER_COMMAND 'drop table if exists images;'
+
+	printf '\n'
+	printf 'Table images dropped!\n'
+fi
+
+print_box_header "Scraper tables"
+printf "In most cases you don't need to drop the scarper tables!\n"
+
+# Array of scraper tables to be dropped
+declare -a scraper_tables=(
+	'series'
+	'series_episode'
+	'series_media'
+	'series_actor'
+	'movie'
+	'movie_actor'
+	'movie_actors'
+	'movie_media'
+	'thetvdbview'
+	'usevents'
+)
+
+if confirm "Drop scraper tables?"; then
+	# Combine all scraper tables into a single DROP TABLE command
+	SQL_DROP_SCRAPER="DROP TABLE IF EXISTS $(IFS=','; echo "${scraper_tables[*]}") CASCADE;"
+	$DB_USER_COMMAND "$SQL_DROP_SCRAPER"
+
+	$DB_USER_COMMAND 'update events set scrseriesid = null, scrseriesepisode = null, scrmovieid = null, scrsp = null;'
+	$DB_USER_COMMAND 'update recordinglist set scrseriesid = null, scrseriesepisode = null, scrmovieid = null, scrnew = null, scrsp = null;'
+
+	printf '\n'
+	printf 'Scraper tables dropped!\n'
+fi
+
+print_box_header "Tables with User Data"
+printf "In most cases you DON'T LIKE to drop tables with the USER data!\n"
+printf 'If you proceed in the next step you will to backup it\n'
+
+# Array of user data tables for backup
+declare -a user_data_backup_tables=(
+	'parameters'
+	'users'
+	'timersdone'
+	'searchtimers'
+)
+
+if confirm "Drop tables with user data?"; then
+	if confirm "Backup User Data Tables now?"; then
+		for table in "${user_data_backup_tables[@]}"; do
+			mysqldump --opt -u "${EPGDB_USER}" "${EPGDB}" "$table" | gzip > "./${table}-dump.sql.gz"
+			printf 'Table %s dumped to ./%s-dump.sql.gz\n' "$table" "$table"
+		done
+	fi
+
+	# Array of user data tables to be dropped
+	declare -a user_data_drop_tables=(
+		'parameters'
+		'searchtimers'
+		'timersdone'
+		'users'
+	)
+	
+	# Combine all user data tables into a single DROP TABLE command
+	SQL_DROP_USER_DATA="DROP TABLE IF EXISTS $(IFS=','; echo "${user_data_drop_tables[*]}") CASCADE;"
+	$DB_USER_COMMAND "$SQL_DROP_USER_DATA"
+
+	printf '\n'
+	printf 'User Data tables dropped!\n'
+fi
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

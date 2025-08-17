@@ -1,0 +1,62 @@
+#!/bin/bash
+# /usr/local/bin/epgd-showmerge
+
+# ----------------------------------------------------------------------------
+# This script is licensed under the GNU General Public License, Version 2.0.
+#
+# Original Source: https://github.com/horchi/vdr-epg-daemon
+# Modified by: Lapicidae (https://github.com/lapicidae)
+# ----------------------------------------------------------------------------
+
+
+# Set common config file path
+common_conf="${common_conf_path:-"/usr/local/etc/epgd-common.sh"}"
+
+if [ ! -r "$common_conf" ]; then
+	echo "ERROR: Config file not found or readable: $common_conf" >&2
+	exit 1
+fi
+
+# Exit on errors, use pipefail, and treat unset variables as an error
+set -euo pipefail
+
+# Source the configuration file
+# shellcheck source=/dev/null
+source "$common_conf"
+
+
+if [ "$#" -gt 0 ] && [ "$1" == "-h" ]; then
+	printf '\tUsage: %s [<channelid>] [<to-date>]\n' "$0"
+	printf '\t\t(without channelid the merge state will shown)\n'
+	printf '\n'
+	printf '\tExample: %s S19.2E-1-1010-11150 "%s"\n' "$0" "$(date +%Y-%m-%d -d '+ 3 day')"
+	exit 0
+fi
+
+# Run initial, unconditional queries
+$DB_USER_COMMAND "select from_unixtime(lastmerge) as 'last merge was at' from vdrs where uuid = 'epgd';"
+$DB_USER_COMMAND "select count(1) as 'events pending for merge' from events where source = 'vdr' and updsp > (select lastmerge from vdrs where uuid = 'epgd');"
+$DB_USER_COMMAND "select count(source),source from events group by source;"
+
+# Check if a channel ID was provided
+if [ "$#" -eq 0 ]; then
+	# If no channel ID, show merge state
+	$DB_USER_COMMAND "select count(*),source,updflg from events where starttime+duration >= unix_timestamp() group by source,updflg;"
+else
+	# If a channel ID is provided, check for a date
+	if [ "$#" -eq 1 ]; then
+		# No to-date provided, use tomorrow as default
+		to=$(date +%Y-%m-%d -d "+ 1 day")
+	else
+		# Use the provided to-date
+		to=$2
+	fi
+
+	printf 'channel %s\n' "$1"
+	query="select source,masterid,useid,updflg,delflg,from_unixtime(starttime) starttime,round(duration/60,0) duration,substr(title,1,45) title,from_unixtime(updsp) updsp  from events where channelid = '$1' and from_unixtime(starttime) <= '$to' order by starttime,source desc limit 50;"
+	$DB_USER_COMMAND "$query"
+fi
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

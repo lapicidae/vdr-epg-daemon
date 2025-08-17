@@ -1,0 +1,33 @@
+#!/bin/bash
+# /usr/local/bin/epgd-showdones
+
+# ----------------------------------------------------------------------------
+# This script is licensed under the GNU General Public License, Version 2.0.
+#
+# Original Source: https://github.com/horchi/vdr-epg-daemon
+# Modified by: Lapicidae (https://github.com/lapicidae)
+# ----------------------------------------------------------------------------
+
+
+# Set common config file path
+common_conf="${common_conf_path:-"/usr/local/etc/epgd-common.sh"}"
+
+if [ ! -r "$common_conf" ]; then
+	echo "ERROR: Config file not found or readable: $common_conf" >&2
+	exit 1
+fi
+
+# Exit on errors, use pipefail, and treat unset variables as an error
+set -euo pipefail
+
+# Source the configuration file
+# shellcheck source=/dev/null
+source "$common_conf"
+
+
+$DB_USER_COMMAND " \
+	select from_unixtime(updsp, '%d.%m %H:%m') as upd, id, state as s, substr(title,1,35), shorttext, episodecompname, episodecomppartname, expression from timersdone where state != 'D';"
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;
