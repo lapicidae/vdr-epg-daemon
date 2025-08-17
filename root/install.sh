@@ -133,6 +133,7 @@ _ntfy 'folders and symlinks'
 mkdir -p /defaults/channellogos
 mkdir -p /defaults/config
 mkdir -p /epgd/cache
+ln -s /epgd/config /etc/epgd
 mkdir -p /epgd/epgimages && mkdir -p /var/cache/vdr
 ln -s /epgd/epgimages /var/cache/vdr/epgimages
 mkdir -p /epgd/channellogos && mkdir -p /var/epgd/www
@@ -179,6 +180,7 @@ cp run-tvs-scraper /usr/local/bin/
 chown root:root /usr/local/bin/run-tvs-scraper
 chmod 755 /usr/local/bin/run-tvs-scraper
 cp -rf config/{xmltv.xsl,xmltv-category.xml} /defaults/config/
+ln -s /epgd/config/run-tvs-scraper.conf /etc/run-tvs-scraper.conf
 
 _ntfy 'get channellogos'
 cd /tmp || exit 1

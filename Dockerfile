@@ -19,8 +19,7 @@ ARG authors="A. Hemmerle <github.com/lapicidae>" \
 
 ENV PATH="$PATH:/command"
 ENV LANG="de_DE.UTF-8" \
-    S6_VERBOSITY="1" \
-    runTVSconfigFile="/epgd/config/run-tvs-scraper.conf"
+    S6_VERBOSITY="1"
 
 ADD https://github.com/just-containers/s6-overlay/releases/download/v$S6VER/s6-overlay-noarch.tar.xz /tmp
 ADD https://github.com/just-containers/s6-overlay/releases/download/v$S6VER/s6-overlay-x86_64.tar.xz /tmp
