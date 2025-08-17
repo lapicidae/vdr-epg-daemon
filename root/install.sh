@@ -46,6 +46,7 @@ runtimePKG=(
     libxml2
     libxslt1.1
     locales
+    mariadb-client-core
     passwd
     python3
     python3-cssselect
