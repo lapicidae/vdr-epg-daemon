@@ -1,5 +1,5 @@
 #!/bin/bash
-#/usr/local/bin/healthcheck
+# /usr/local/bin/healthcheck
 
 # services
 servicedir='/run/s6-rc/servicedirs'
@@ -22,3 +22,7 @@ fi
 if [ -d $epgHTTPD ] && [ "$START_EPGHTTPD" == 'true' ]; then
 	$svstat $epgHTTPD >/dev/null 2>&1
 fi
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

@@ -1,5 +1,5 @@
 #!/bin/bash
-
+# /usr/local/bin/svdrpsend
 
 # Usage Message
 usage () {
@@ -75,3 +75,7 @@ elif command -v gawk >/dev/null 2>&1; then
 else
 	usage
 fi
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;

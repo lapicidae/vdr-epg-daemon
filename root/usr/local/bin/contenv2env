@@ -1,5 +1,5 @@
 #!/bin/bash
-#/usr/local/bin/contenv2env
+# /usr/local/bin/contenv2env
 
 ## Workaround:
 ## Making subsequently defined container variables available in bash.
@@ -15,3 +15,7 @@ if [ -d "$ENVDIR" ]; then
 		fi
 	done
 fi
+
+
+# vim: ts=4 sw=4 noet:
+# kate: space-indent off; indent-width 4; mixed-indent off;
