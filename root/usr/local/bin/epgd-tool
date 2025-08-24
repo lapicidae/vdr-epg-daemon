@@ -482,8 +482,8 @@ case $1 in
 			printf '\nERROR: Neither "curl" nor "wget" found. Please install one of these tools.\n' >&2
 			exit 1
 		fi
-		
-		tmdb_api_key="$(grep ScrapMovieDbApiKey "$epgd_conf" | sed -E 's/ScrapMovieDbApiKey *= *(.*)/\1/')"
+
+		tmdb_api_key="$(grep ScrapMovieDbApiKey "$epgd_conf" | sed -E 's/ScrapMovieDbApiKey *= *(.*)/\1/')" || true
 		tmdb_movie_id='550'
 		tmdb_api_url="https://api.themoviedb.org/3/movie/${tmdb_movie_id}?"
 

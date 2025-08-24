@@ -53,7 +53,7 @@ else
 	fi
 
 	printf 'channel %s\n' "$1"
-	query="select source,masterid,useid,updflg,delflg,from_unixtime(starttime) starttime,round(duration/60,0) duration,substr(title,1,45) title,from_unixtime(updsp) updsp  from events where channelid = '$1' and from_unixtime(starttime) <= '$to' order by starttime,source desc limit 50;"
+	query="select source,masterid,useid,updflg,delflg,from_unixtime(starttime) starttime,round(duration/60,0) duration,substr(title,1,45) title,from_unixtime(updsp) updsp from events where channelid = '$1' and from_unixtime(starttime) <= '$to' order by starttime,source desc limit 50;"
 	$DB_USER_COMMAND "$query"
 fi
 
