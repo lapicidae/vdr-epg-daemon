@@ -164,6 +164,7 @@ sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
 git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
 patch Makefile /build/epgd-scripts_no_clobber.patch
+patch PLUGINS/tvm/configs/tvmovie.xsl /build/plugin-tvm_xsl-duration-year.patch
 patch PLUGINS/xmltv/Makefile /build/plugin-xmltv_no-clobber.patch
 patch configs/epg.dat /build/epgd-dat-extend-txtrating.patch
 patch configs/epg.dat PLUGINS/xmltv/patches/epgd-dat-extend-externalid.diff
