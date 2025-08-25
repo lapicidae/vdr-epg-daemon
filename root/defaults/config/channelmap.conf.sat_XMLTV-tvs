@@ -64,7 +64,7 @@ tvm:17:2:1		=	S19.2E-1-1007-4912,S19.2E-1-1005-13310		//	ORF2 HD,ORF 2 EUROPE HD
 // tvm:30		=	S19.2E-1-1091-31200			//	Eurosport 1 Deutschland
 // tvm:30hd:2	=	S19.2E-1-1043-12502			//	Eurosport 1 HD
 // tvm:31:2		=	S19.2E-1-1053-21108			//	WELT HD
-tvm:32:2		=	S19.2E-1-1078-28654			//	MTV HD
+// tvm:32:2		=	S19.2E-1-1078-28654			//	MTV HD
 // tvm:33		=	//	TV5 MONDE
 tvm:38:2:1		=	S19.2E-1-1019-10302			//	arte HD
 tvm:39:2		=	S19.2E-1-1017-61302			//	kabel eins HD
@@ -184,7 +184,7 @@ tvm:277:2		=	S19.2E-133-12-107			//	Sky Cinema Classics
 tvm:278:2		=	S19.2E-133-4-23				//	Sky Krimi
 // tvm:279		=	//	Disney Cinemagic (obsolete)
 // tvm:279hd	=	//	Disney Cinemagic HD
-// tvm:284		=	//	Nat Geo Wild
+tvm:284:2		=	S19.2E-133-4-119			//	NatGeo Wild
 // tvm:285		=	//	Spiegel Geschichte
 // tvm:286		=	//	Sky Sport Austria 1 (HTTP 404)
 // tvm:287:2	=	S19.2E-133-11-168			//	Motorvision+
@@ -364,10 +364,10 @@ xmltv:mdr.tvs:1:1		=	S19.2E-1-1061-10352,S19.2E-1-1061-10353,S19.2E-1-1061-10354
 // xmltv:mtv-d.tvs		=	//	Club MTV
 // xmltv:mtv-h.tvs		=	//	MTV Hits
 // xmltv:mtv-l.tvs		=	//	MTV Live HD
-xmltv:mtv.tvs			=	S19.2E-1-1078-28654			//	MTV HD
-// xmltv:n-ghd.tvs		=	//	Nat Geo HD
-// xmltv:n-gw.tvs		=	//	NAT GEO WILD
-xmltv:n24doku.tvs		=	S19.2E-133-5-48				//	N24 DOKU
+// xmltv:mtv.tvs		=	S19.2E-1-1078-28654			//	MTV HD
+// xmltv:n-ghd.tvs		=	S19.2E-133-6-130			//	NatGeo		!!!VDR EPG data errors!!!
+xmltv:n-gw.tvs			=	S19.2E-133-4-119			//	NatGeo Wild
+// xmltv:n24doku.tvs	=	S19.2E-133-5-48				//	N24 DOKU	!!!VDR EPG data errors!!!
 xmltv:n3.tvs:1:1		=	S19.2E-1-1025-10329,S19.2E-1-1025-10328,S19.2E-1-1025-10327,S19.2E-1-1025-10330		//	NDR FS HH HD,NDR FS MV HD,NDR FS NDS HD,NDR FS SH HD
 // xmltv:nauch.tvs		=	//	Nautical Channel
 // xmltv:nhk.tvs		=	S19.2E-1-1002-5021			//	NHK WORLD-JPN
@@ -481,4 +481,6 @@ xmltv:zinfo.tvs			=	S19.2E-1-1010-11170			//	ZDFinfo HD
 // xmltv:euro-d.tvs		=	S42.0E-66-3-1309			//	EURO D
 // xmltv:shot.tvs		=	S42.0E-1070-32204-13500		//	SHOW TURK
 
+
 // vim: ts=4 sw=4 noet:
+// kate: space-indent off; indent-width 4; mixed-indent off;
