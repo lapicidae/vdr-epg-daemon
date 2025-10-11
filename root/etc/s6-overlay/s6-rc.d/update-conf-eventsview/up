@@ -1,0 +1,14 @@
+#!/command/execlineb -P
+with-contenv
+importas -D "true" start UPDATE_CONF_EVENTSVIEW
+define default_dir "/defaults/config"
+define conf_dir "/epgd/config"
+if -tn { eltest ${start} = false }
+ elglob -0s eventsviews "${default_dir}/eventsview*.sql"
+ forx eventsview { ${eventsviews} }
+  importas -S eventsview
+  backtick -E filename { s6-basename -n "${eventsview}" }
+  if -t { eltest -r "${eventsview}" }
+   if -tn { cmp --silent "${eventsview}" "${conf_dir}/${filename}" }
+    foreground { s6-echo "Update of the eventsview file \"${filename}\" in the config directory \"${conf_dir}\"" }
+    cp --backup=numbered "${eventsview}" "${conf_dir}/${filename}"

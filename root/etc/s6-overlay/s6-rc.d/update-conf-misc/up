@@ -1,0 +1,35 @@
+#!/command/execlineb -P
+with-contenv
+importas -D "true" start UPDATE_CONF_MISC
+define default_dir "/defaults/config"
+define conf_dir "/epgd/config"
+if -tn { eltest ${start} = false }
+ elglob -0s files_sql "${default_dir}/*.sql"
+ foreground {
+  forx file_sql { ${files_sql} }
+   importas -S file_sql
+   backtick -E filename_sql { s6-basename -n "${file_sql}" }
+   if -tn { eltest ${filename_sql} =~ "eventsview" -o ${filename_sql} = "userexit.sql" }
+    if -t { eltest -r "${file_sql}" }
+     if -tn { cmp --silent "${file_sql}" "${conf_dir}/${filename_sql}" }
+      foreground { s6-echo "Update of the file \"${filename_sql}\" in the config directory \"${conf_dir}\"" }
+      cp --backup=numbered "${file_sql}" "${conf_dir}/${filename_sql}"
+ }
+ elglob -0s files_py "${default_dir}/*.py"
+ foreground {
+  forx file_py { ${files_py} }
+   importas -S file_py
+   backtick -E filename_py { s6-basename -n "${file_py}" }
+   if -t { eltest -r "${file_py}" }
+    if -tn { cmp --silent "${file_py}" "${conf_dir}/${filename_py}" }
+     foreground { s6-echo "Update of the file \"${filename_py}\" in the config directory \"${conf_dir}\"" }
+     cp --backup=numbered "${file_py}" "${conf_dir}/${filename_py}"
+ }
+ elglob -0s files_dat "${default_dir}/*.dat"
+ forx file_dat { ${files_dat} }
+  importas -S file_dat
+  backtick -E filename_dat { s6-basename -n "${file_dat}" }
+  if -t { eltest -r "${file_dat}" }
+   if -tn { cmp --silent "${file_dat}" "${conf_dir}/${filename_dat}" }
+    foreground { s6-echo "Update of the file \"${filename_dat}\" in the config directory \"${conf_dir}\"" }
+    cp --backup=numbered "${file_dat}" "${conf_dir}/${filename_dat}"

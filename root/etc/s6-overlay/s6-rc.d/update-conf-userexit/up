@@ -1,0 +1,13 @@
+#!/command/execlineb -P
+with-contenv
+importas -D "true" start UPDATE_CONF_USEREXIT
+define default_dir "/defaults/config"
+define conf_dir "/epgd/config"
+define file_default "${default_dir}/userexit.sql"
+define file_conf "${conf_dir}/userexit.sql"
+if -tn { eltest ${start} = false }
+ if -t { eltest -r "${file_default}" }
+   if -tn { cmp --silent "${file_default}" "${file_conf}" }
+    backtick -E filename { s6-basename -n "${file_default}" }
+    foreground { s6-echo "Update of the userexit file \"${filename}\" in the config directory \"${conf_dir}\"" }
+    cp --backup=numbered "${file_default}" "${file_conf}"

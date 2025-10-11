@@ -102,12 +102,16 @@ For example, `-p 8080:80` would expose port `80` from inside the container to be
 | `-e PGID=1000` | 1000 | for GroupID - see below for explanation |
 | `-e TZ=Europe/London` | Europe/London | Specify a [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List) to use (e.g. Europe/London) |
 | `-e LANG=de_DE.UTF-8` | de_DE.UTF-8 | Default locale; see [list](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=localedata/SUPPORTED;hb=HEAD) (**only `de_DE.UTF-8` is currently supported**) |
+| `-e UPDATE_CONF_EVENTSVIEW=false` | true | Optional - Do not keep the provided eventsview sql files up to date |
+| `-e UPDATE_CONF_PLUGINS=false` | true | Optional - Do not keep the provided config files of the plugins up to date |
+| `-e UPDATE_CONF_USEREXIT=false` | true | Optional - Do not keep the provided file `userexit.sql` up to date |
+| `-e UPDATE_CONF_MISC=false` | true | Optional - Do not keep all other provided `.dat`, `.py` and `.sql` files up to date |
 | `-e LOGO_INTERNAL=false` | true | Optional - Use your own station logos in `/epgd/channellogos` |
 | `-e LOGO_OVERWRITE=false` | true | Optional - Do not overwrite existing logos in `/epgd/channellogos` (only relevant if internal logos are used) |
 | `-e START_EPGHTTPD=false` | true | Optional - Disable webinterface (epghttpd) |
 | `-e RESTART_EPGD=true` | false | Optional - Restart epgd once at 3:30 AM after the start of the container |
 | `-e RESTART_EPGD_AT=3:30` | 3:30 | Optional - Change default restart time ([examples](https://www.ibm.com/docs/en/zos/2.5.0?topic=descriptions-run-command-specified-time)) |
-| `-e KNOCK_EPLISTS=false` | true | Optional - Disable connection ceck  |
+| `-e KNOCK_EPLISTS=false` | true | Optional - Disable the [eplists.de](http://eplists.de) connection check |
 | `-e LOG2FILE=true` | false | Optional - Write log to file in `/epgd/log` |
 | `-v /epgd/config` | | Config files |
 | `-v /epgd/epgimages` | | EPG images for use in other plugins (e.g. [live plugin](https://github.com/MarkusEh/vdr-plugin-live)) |

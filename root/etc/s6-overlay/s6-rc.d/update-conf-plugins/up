@@ -1,0 +1,25 @@
+#!/command/execlineb -P
+with-contenv
+importas -D "true" start UPDATE_CONF_PLUGINS
+define default_dir "/defaults/config"
+define conf_dir "/epgd/config"
+define plugin_dir "/usr/local/lib/epgd/plugins"
+if -tn { eltest ${start} = false }
+ elglob -0s libraries "${plugin_dir}/*.so"
+ forx library { ${libraries} }
+  importas -S library
+  if { eltest "${library}" =~ "libepgd-" }
+   backtick -E plugin {
+    ifelse { eltest "${library}" =~ "tvm.so" }
+     { s6-echo -n "tvmovie" }
+     pipeline { s6-basename -n "${library}" ".so" }
+     s6-cut -d "-" -f 2
+   }
+   elglob -0s files "${default_dir}/${plugin}*.*"
+   forx file { ${files} }
+    importas -S file
+    backtick -E filename { s6-basename -n "${file}" }
+    if -t { eltest -r "${file}" }
+     if -tn { cmp --silent "${file}" "${conf_dir}/${filename}" }
+      foreground { s6-echo "Update of the plugin file \"${filename}\" in the config directory \"${conf_dir}\"" }
+      cp --backup=numbered "${file}" "${conf_dir}/${filename}"
