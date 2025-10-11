@@ -95,25 +95,25 @@ Container images are configured using parameters passed at runtime.
 These parameters are separated by a colon and indicate `<external>:<internal>` respectively.  
 For example, `-p 8080:80` would expose port `80` from inside the container to be accessible from the host's IP on port `8080` outside the container.
 
-| Parameter | Function |
-| :----: | --- |
-| `-p 9999` | epghttpd Webinterface |
-| `-e PUID=1000` | for UserID - see below for explanation |
-| `-e PGID=1000` | for GroupID - see below for explanation |
-| `-e TZ=Europe/London` | Specify a [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List) to use (e.g. Europe/London) |
-| `-e LANG=de_DE.UTF-8` | Default locale; see [list](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=localedata/SUPPORTED;hb=HEAD) (only `de_DE.UTF-8` is currently supported) |
-| `-e LOGO_INTERNAL=false` | Optional - Use your own station logos in `/epgd/channellogos` |
-| `-e LOGO_OVERWRITE=false` | Optional - Do not overwrite existing logos in `/epgd/channellogos` (only relevant if internal logos are used) |
-| `-e START_EPGHTTPD=false` | Optional - Disable webinterface (epghttpd) |
-| `-e RESTART_EPGD=true` | Optional - Restart epgd once at 3:30 AM after the start of the container |
-| `-e RESTART_EPGD_AT=3:30` | Optional - Change default restart time ([examples](https://www.ibm.com/docs/en/zos/2.5.0?topic=descriptions-run-command-specified-time)) |
-| `-e KNOCK_EPLISTS=false` | Optional - Disable connection ceck  |
-| `-e LOG2FILE=true` | Optional - Write log to file in `/epgd/log` |
-| `-v /epgd/config` | Config files |
-| `-v /epgd/epgimages` | EPG images for use in other plugins (e.g. [live plugin](https://github.com/MarkusEh/vdr-plugin-live)) |
-| `-v /epgd/cache` | Downloaded, temporary files |
-| `-v /epgd/channellogos`| TV station logos used in Webinterface |
-| `-v /epgd/log` | Logfiles if `LOG2FILE=true` |
+| Parameter | Default | Function |
+| :----: | ----- | ----- |
+| `-p 9999` | 9999 | epghttpd Webinterface |
+| `-e PUID=1000` | 1000 | for UserID - see below for explanation |
+| `-e PGID=1000` | 1000 | for GroupID - see below for explanation |
+| `-e TZ=Europe/London` | Europe/London | Specify a [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List) to use (e.g. Europe/London) |
+| `-e LANG=de_DE.UTF-8` | de_DE.UTF-8 | Default locale; see [list](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=localedata/SUPPORTED;hb=HEAD) (**only `de_DE.UTF-8` is currently supported**) |
+| `-e LOGO_INTERNAL=false` | true | Optional - Use your own station logos in `/epgd/channellogos` |
+| `-e LOGO_OVERWRITE=false` | true | Optional - Do not overwrite existing logos in `/epgd/channellogos` (only relevant if internal logos are used) |
+| `-e START_EPGHTTPD=false` | true | Optional - Disable webinterface (epghttpd) |
+| `-e RESTART_EPGD=true` | false | Optional - Restart epgd once at 3:30 AM after the start of the container |
+| `-e RESTART_EPGD_AT=3:30` | 3:30 | Optional - Change default restart time ([examples](https://www.ibm.com/docs/en/zos/2.5.0?topic=descriptions-run-command-specified-time)) |
+| `-e KNOCK_EPLISTS=false` | true | Optional - Disable connection ceck  |
+| `-e LOG2FILE=true` | false | Optional - Write log to file in `/epgd/log` |
+| `-v /epgd/config` | | Config files |
+| `-v /epgd/epgimages` | | EPG images for use in other plugins (e.g. [live plugin](https://github.com/MarkusEh/vdr-plugin-live)) |
+| `-v /epgd/cache` | | Downloaded, temporary files |
+| `-v /epgd/channellogos` | | TV station logos used in Webinterface |
+| `-v /epgd/log` | | Logfiles if `LOG2FILE=true` |
 
 ### User / Group Identifiers
 
