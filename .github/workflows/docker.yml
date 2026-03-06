@@ -63,7 +63,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push - DEBIAN
         if: ${{ (github.event.inputs.tags == 'bld_debian') || (github.event.inputs.tags == 'bld_all') }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           build-args: |
             baseDIGEST=${{ steps.get_arg.outputs.DEBIANbaseDIGEST }}
@@ -81,7 +81,7 @@ jobs:
             ghcr.io/${{ github.repository }}:debian
       - name: Build and push - UBUNTU
         if: ${{ (github.event.inputs.tags == 'bld_ubuntu') || (github.event.inputs.tags == 'bld_all') }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           build-args: |
             baseDIGEST=${{ steps.get_arg.outputs.UBUNTUbaseDIGEST }}
