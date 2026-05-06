@@ -43,7 +43,6 @@ runtimePKG=(
     libmariadb3
     libmicrohttpd12
     '^libpython[3-9]+.\b([0-9]|[1-9][0-9]|999)\b$'
-    libxml2
     libxslt1.1
     locales
     mariadb-client-core
@@ -78,11 +77,15 @@ buildPKG=(
     zlib1g-dev
 )
 if [ "$baseIMAGE" = 'ubuntu' ]; then
-    runtimePKG+=(libjpeg8)
+    runtimePKG+=(
+        libjpeg8
+        '^libxml2-[0-9]+$'
+    )
     buildPKG+=(libjpeg-dev)
 elif [ "$baseIMAGE" = 'debian' ]; then
     runtimePKG+=(
         libjpeg62-turbo
+        libxml2
         locales-all
     )
     buildPKG+=(libjpeg62-turbo-dev)
