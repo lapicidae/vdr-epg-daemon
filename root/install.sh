@@ -118,9 +118,9 @@ useradd --system --no-create-home --shell /bin/false syslog
 useradd --system --no-create-home --shell /bin/false sysllog
 
 _ntfy 'locale'
-localedef -i "$(echo "$LANG" | cut -d "." -f 1)" -c -f "$(echo "$LANG" | cut -d "." -f 2)" -A /usr/share/locale/locale.alias "$LANG"
 locale-gen "$LANG"
-update-locale LANG="$LANG" LANGUAGE="$(echo "$LANG" | cut -d "." -f 1):$(echo "$LANG" | cut -d "_" -f 1)"
+localedef -i "${LANG%.*}" -f "${LANG#*.}" -c "$LANG"
+update-locale LANG="$LANG" LANGUAGE="${LANG%_*}:${LANG%_*}"
 
 _ntfy 'bash tweaks'
 {
