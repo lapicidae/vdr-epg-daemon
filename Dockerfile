@@ -9,13 +9,14 @@ ARG authors="A. Hemmerle <github.com/lapicidae>" \
     DEBIAN_FRONTEND="noninteractive" \
     EPGD_DEV="true" \
     inVM="true" \
-    S6VER="3.2.2.0" \
     baseDIGEST \
     baseIMAGE \
     baseTAG \
     dateTime \
     epgdRevision \
     epgdVersion
+
+ARG S6VER="3.2.2.0"
 
 ENV PATH="$PATH:/command"
 ENV LANG="de_DE.UTF-8" \
