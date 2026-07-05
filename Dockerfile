@@ -16,7 +16,7 @@ ARG authors="A. Hemmerle <github.com/lapicidae>" \
     epgdRevision \
     epgdVersion
 
-ARG S6VER="3.2.2.0"
+ARG S6VER=3.2.3.0
 
 ENV PATH="$PATH:/command"
 ENV LANG="de_DE.UTF-8" \
