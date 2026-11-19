@@ -176,13 +176,37 @@ cd vdr-epg-daemon || exit 1
 # shellcheck disable=SC2016
 sed -i 's/CONFDEST     = $(DESTDIR)\/etc\/epgd/CONFDEST     = $(DESTDIR)\/defaults\/config/g' Make.config
 sed -i 's/INIT_SYSTEM  = systemd/INIT_SYSTEM  = none/g' Make.config
+
+## Plugins
+# sngtv
+git clone https://github.com/horchi/epgd-plugin-sngtv.git ./PLUGINS/sngtv
+# tvm
 git clone https://github.com/3PO/epgd-plugin-tvm.git ./PLUGINS/tvm
+# xmltv
 git clone https://github.com/Zabrimus/epgd-plugin-xmltv.git ./PLUGINS/xmltv
-patch Makefile /build/epgd-scripts_no_clobber.patch
 patch PLUGINS/xmltv/Makefile /build/plugin-xmltv_no-clobber.patch
+
+patch Makefile /build/epgd-scripts_no_clobber.patch
 patch configs/epg.dat /build/epgd-dat-extend-txtrating.patch
 # make all install
 make install-epgd install-epghttpd
+
+if command -v sngtv-channels >/dev/null 2>&1; then
+    _ntfy 'prepare sngtv channelmap template'
+    sngtvSortByID='false' # true = sort by ID, false = original order (by name)
+    if sngtvOut="$(sngtv-channels 2>/dev/null)" && [ -n "$sngtvOut" ]; then
+        if [ "$sngtvSortByID" = 'true' ]; then
+            sngtvOut="$(printf '%s\n' "$sngtvOut" | LC_ALL=C sort -n)"
+        fi
+        while IFS=$' \t\r' read -r id name; do
+            if [[ "$id" =~ ^[0-9]+$ ]]; then
+                printf '// sngtv:%s\t\t=\t//\t%s\n' "$id" "$name"
+            fi
+        done <<< "$sngtvOut" >> /defaults/config/channelmap.conf.sngtv
+    fi
+else
+    rm -f /defaults/config/channelmap.conf.sngtv
+fi
 
 _ntfy 'get tvs-scraper'
 tvsscraperURL='https://github.com/lapicidae/tvs-scraper/'

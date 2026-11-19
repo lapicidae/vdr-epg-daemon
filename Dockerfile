@@ -14,7 +14,11 @@ ARG authors="A. Hemmerle <github.com/lapicidae>" \
     baseTAG \
     dateTime \
     epgdRevision \
-    epgdVersion
+    epgdVersion \
+    pluginSngtvRevision \
+    pluginTvmRevision \
+    pluginXmltvRevision \
+    tvsScraperVersion
 
 ARG S6VER=3.2.3.2
 
@@ -42,7 +46,11 @@ LABEL org.opencontainers.image.authors="${authors}" \
       org.opencontainers.image.title="epgd" \
       org.opencontainers.image.url="https://github.com/lapicidae/vdr-epg-daemon" \
       org.opencontainers.image.vendor="lapicidae" \
-      org.opencontainers.image.version="${epgdVersion}"
+      org.opencontainers.image.version="${epgdVersion}" \
+      io.github.lapicidae.plugin.sngtv.revision="${pluginSngtvRevision}" \
+      io.github.lapicidae.plugin.tvm.revision="${pluginTvmRevision}" \
+      io.github.lapicidae.plugin.xmltv.revision="${pluginXmltvRevision}" \
+      io.github.lapicidae.tvs-scraper.version="${tvsScraperVersion}"
 
 EXPOSE 9999
 

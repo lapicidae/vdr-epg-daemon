@@ -72,6 +72,10 @@ fi
 
 dateTime="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 printf -v baseDIGEST '%s' "$(docker image pull "${baseIMAGE}":"${baseTAG}" | grep -i digest | cut -d ' ' -f 2)"
+pluginSngtvRevision="$(git ls-remote 'https://github.com/horchi/epgd-plugin-sngtv.git' HEAD | cut -f 1)"
+pluginTvmRevision="$(git ls-remote 'https://github.com/3PO/epgd-plugin-tvm.git' HEAD | cut -f 1)"
+pluginXmltvRevision="$(git ls-remote 'https://github.com/Zabrimus/epgd-plugin-xmltv.git' HEAD | cut -f 1)"
+tvsScraperVersion="$(git ls-remote --tags --sort=-version:refname --refs 'https://github.com/lapicidae/tvs-scraper.git' | head -n 1 | cut -d/ -f3)"
 
 docker build \
     --progress=plain \
@@ -83,4 +87,8 @@ docker build \
     --build-arg epgdRevision="${epgdRevision}" \
     --build-arg epgdVersion="${epgdVersion}" \
     --build-arg EPGD_DEV="${EPGD_DEV}" \
+    --build-arg pluginSngtvRevision="${pluginSngtvRevision}" \
+    --build-arg pluginTvmRevision="${pluginTvmRevision}" \
+    --build-arg pluginXmltvRevision="${pluginXmltvRevision}" \
+    --build-arg tvsScraperVersion="${tvsScraperVersion}" \
     .

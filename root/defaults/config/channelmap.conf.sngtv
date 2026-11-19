@@ -1,0 +1,20 @@
+//
+// ChannelMap for EPG Daemon (sngtv template)
+// --------------------------
+//
+// Format:
+//  <source>:<extid>[:<merge>[:<vps>]] = <cid1>[,<cid2>[,<cid3>]]
+//
+// <source>   'vdr' or the source name provided by a plugin
+// <extid>    000 for vdr or the channel id used by the external EPG provider
+// <merge>    Merge DVB and external EPG for this channel
+//            { 0, 1, 2 } (default 1, the default for source 'vdr' is 0)
+// <vps>      { y, Y, n, N, 0, 1 } (default 0)
+// <cid>      VDR ChannelID (Src-NID-TID-SID)
+//
+// Tip: run 'sngtv-channels -c <channels.conf>' inside the container to auto-match your VDR channels
+//
+//
+// sngtv
+// --------------------------
+//

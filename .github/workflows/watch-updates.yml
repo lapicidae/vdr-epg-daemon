@@ -1,0 +1,175 @@
+name: Watch Upstream Updates
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Check for updates without triggering target workflow'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  packages: read
+
+env:
+  TARGET_WORKFLOW: docker.yml
+  ALL_SCENARIO: bld_all
+  SCENARIO_INPUT: tags
+  TRIGGER_INPUT: trigger
+  WATCH_CONFIG: |
+    {
+      "sources": {
+        "debian":      { "name": "debian:stable-slim",  "type": "docker",      "ref": "debian:stable-slim",                                "label": "org.opencontainers.image.base.digest" },
+        "ubuntu":      { "name": "ubuntu:latest",       "type": "docker",      "ref": "ubuntu:latest",                                     "label": "org.opencontainers.image.base.digest" },
+        "epgd":        { "name": "vdr-epg-daemon",      "type": "git-tag-rev", "ref": "https://github.com/horchi/vdr-epg-daemon.git",      "label": "org.opencontainers.image.revision" },
+        "epgd-dev":    { "name": "vdr-epg-daemon(dev)", "type": "git-head",    "ref": "https://github.com/horchi/vdr-epg-daemon.git",      "label": "org.opencontainers.image.revision" },
+        "sngtv":       { "name": "epgd-plugin-sngtv",   "type": "git-head",    "ref": "https://github.com/horchi/epgd-plugin-sngtv.git",   "label": "io.github.lapicidae.plugin.sngtv.revision" },
+        "tvm":         { "name": "epgd-plugin-tvm",     "type": "git-head",    "ref": "https://github.com/3PO/epgd-plugin-tvm.git",        "label": "io.github.lapicidae.plugin.tvm.revision" },
+        "xmltv":       { "name": "epgd-plugin-xmltv",   "type": "git-head",    "ref": "https://github.com/Zabrimus/epgd-plugin-xmltv.git", "label": "io.github.lapicidae.plugin.xmltv.revision" },
+        "tvs-scraper": { "name": "tvs-scraper",         "type": "git-tag",     "ref": "https://github.com/lapicidae/tvs-scraper.git",      "label": "io.github.lapicidae.tvs-scraper.version" }
+      },
+      "targets": [
+        { "tag": "debian", "scenario": "bld_debian", "sources": ["debian", "epgd",     "sngtv", "tvm", "xmltv", "tvs-scraper"] },
+        { "tag": "ubuntu", "scenario": "bld_ubuntu", "sources": ["ubuntu", "epgd",     "sngtv", "tvm", "xmltv", "tvs-scraper"] },
+        { "tag": "dev",    "scenario": "bld_dev",    "sources": ["debian", "epgd-dev", "sngtv", "tvm", "xmltv", "tvs-scraper"] }
+      ]
+    }
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$GHCR_TOKEN" ]; then
+              printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          fi
+
+      - name: Check Upstream Sources & Trigger Builds
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_TOKEN }}
+        run: |
+          declare -A upstreamVal upstreamName upstreamLabel
+
+          while IFS='|' read -r id name type ref label; do
+              case "$type" in
+                  docker)
+                      val="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$ref")"
+                      ;;
+                  git-head)
+                      val="$(git ls-remote "$ref" HEAD | cut -f 1)"
+                      ;;
+                  git-tag)
+                      val="$(git ls-remote --tags --sort=-version:refname --refs "$ref" | head -n 1 | cut -d/ -f3)"
+                      ;;
+                  git-tag-rev)
+                      remoteTags="$(git ls-remote --tags --sort=-version:refname --refs "$ref")"
+                      topTag="$(printf '%s\n' "$remoteTags" | head -n 1 | cut -d/ -f3)"
+                      if [ -n "$topTag" ]; then
+                          val="$(printf '%s\n' "$remoteTags" | awk -v tag="$topTag" '$2 == "refs/tags/" tag {print $1; exit}')"
+                      else
+                          val="$(git ls-remote "$ref" HEAD | cut -f 1)"
+                      fi
+                      ;;
+                  *)
+                      printf 'Error: unknown source type "%s" for "%s"\n' "$type" "$id" >&2
+                      exit 1
+                      ;;
+              esac
+              upstreamVal["$id"]="$val"
+              upstreamName["$id"]="$name"
+              upstreamLabel["$id"]="$label"
+          done < <(jq -r '.sources | to_entries[] | [.key, .value.name, .value.type, .value.ref, .value.label] | join("|")' <<< "$WATCH_CONFIG")
+
+          _get_labels() {
+              local raw
+              raw="$(docker buildx imagetools inspect "$1" --format '{{json .Image}}' 2>/dev/null || true)"
+              if [ -n "$raw" ] && [ "$raw" != 'null' ]; then
+                  jq -r '(.["linux/amd64"].config.Labels // .config.Labels // .["linux/amd64"].Config.Labels // .Config.Labels // {})' <<< "$raw" 2>/dev/null || printf '{}'
+              else
+                  printf '{}'
+              fi
+          }
+
+          _join_reasons() {
+              printf '%s\n' "$@" | awk '!seen[$0]++' | paste -sd ',' - | sed 's/,/, /g'
+          }
+
+          _dispatch() {
+              local scenario="$1" reason="$2"
+              local -a cmd=(gh workflow run "$TARGET_WORKFLOW" --repo "${{ github.repository }}")
+              if [ -n "$SCENARIO_INPUT" ] && [ -n "$scenario" ]; then
+                  cmd+=(-f "${SCENARIO_INPUT}=${scenario}")
+              fi
+              if [ -n "$TRIGGER_INPUT" ] && [ -n "$reason" ]; then
+                  cmd+=(-f "${TRIGGER_INPUT}=auto-update: ${reason}")
+              fi
+              if [ "${{ github.event.inputs.dry_run }}" = 'true' ]; then
+                  printf '[DRY RUN] Would run:'
+                  printf ' %q' "${cmd[@]}"
+                  printf '\n'
+              else
+                  if [ -z "$GH_TOKEN" ]; then
+                      printf 'Error: ACTIONS_TOKEN secret is required to trigger %s\n' "$TARGET_WORKFLOW" >&2
+                      exit 1
+                  fi
+                  printf 'Triggering %s (%s): %s\n' "$TARGET_WORKFLOW" "${scenario:-default}" "$reason"
+                  "${cmd[@]}"
+              fi
+          }
+
+          declare -a triggerScenarios=() triggerReasons=() allReasons=()
+          totalTargets="$(jq -r '.targets | length' <<< "$WATCH_CONFIG")"
+
+          while IFS='|' read -r tag scenario srcList; do
+              image="ghcr.io/${{ github.repository }}:${tag}"
+              labels="$(_get_labels "$image")"
+              printf '=== %s ===\n' "$image"
+              reasons=()
+              IFS=',' read -ra srcIds <<< "$srcList"
+              for id in "${srcIds[@]}"; do
+                  expected="${upstreamVal[$id]}"
+                  name="${upstreamName[$id]}"
+                  label="${upstreamLabel[$id]}"
+                  current="$(jq -r --arg k "$label" '.[$k] // ""' <<< "$labels")"
+                  printf '  %-24s current=%-42s upstream=%s\n' "$name" "${current:-<missing>}" "$expected"
+                  if [ -n "$expected" ] && [ "$current" != "$expected" ]; then
+                      reasons+=("$name")
+                      allReasons+=("$name")
+                  fi
+              done
+              if [ ${#reasons[@]} -gt 0 ]; then
+                  triggerScenarios+=("$scenario")
+                  triggerReasons+=("$(_join_reasons "${reasons[@]}")")
+              fi
+          done < <(jq -r '.targets[] | [.tag, (.scenario // ""), (.sources | join(","))] | join("|")' <<< "$WATCH_CONFIG")
+
+          printf '\n=== Summary ===\n'
+          if [ ${#triggerReasons[@]} -eq 0 ]; then
+              printf 'All images are up to date.\n'
+          elif [ ${#triggerReasons[@]} -eq "$totalTargets" ] && [ "$totalTargets" -gt 1 ] && [ -n "$ALL_SCENARIO" ]; then
+              _dispatch "$ALL_SCENARIO" "$(_join_reasons "${allReasons[@]}")"
+          else
+              for i in "${!triggerReasons[@]}"; do
+                  _dispatch "${triggerScenarios[$i]}" "${triggerReasons[$i]}"
+              done
+          fi
+
+      - name: Keep Workflow Alive
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+              printf 'Skipping Keep Workflow Alive: ACTIONS_TOKEN is not set.\n'
+              exit 0
+          fi
+          WORKFLOW_FILE=$(basename "${GITHUB_WORKFLOW_REF%%@*}")
+          printf "Keeping workflow active: %s\n" "$WORKFLOW_FILE"
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_FILE}/enable"
+          printf "Workflow successfully kept alive.\n"

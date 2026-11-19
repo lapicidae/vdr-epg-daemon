@@ -83,6 +83,11 @@ jobs:
               rm -rf "$gitDIR"
           fi
 
+          pluginSngtvRevision="$(git ls-remote 'https://github.com/horchi/epgd-plugin-sngtv.git' HEAD | cut -f 1)"
+          pluginTvmRevision="$(git ls-remote 'https://github.com/3PO/epgd-plugin-tvm.git' HEAD | cut -f 1)"
+          pluginXmltvRevision="$(git ls-remote 'https://github.com/Zabrimus/epgd-plugin-xmltv.git' HEAD | cut -f 1)"
+          tvsScraperVersion="$(git ls-remote --tags --sort=-version:refname --refs 'https://github.com/lapicidae/tvs-scraper.git' | head -n 1 | cut -d/ -f3)"
+
           printf 'dateTime=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
           printf 'epgdRevision=%s\n' "${epgdRevision}" >> $GITHUB_OUTPUT
           printf 'epgdVersion=%s\n' "${epgdVersion}" >> $GITHUB_OUTPUT
@@ -90,8 +95,12 @@ jobs:
           printf 'isLatest=%s\n' "${isLatest}" >> $GITHUB_OUTPUT
           printf 'epgdDevVersion=%s\n' "${epgdDevVersion}" >> $GITHUB_OUTPUT
           printf 'epgdDevRevision=%s\n' "${epgdDevRevision}" >> $GITHUB_OUTPUT
-          printf 'DEBIANbaseDIGEST=%s\n' "$(docker image pull ${{ env.DEBIANbaseIMAGE }}:${{ env.DEBIANbaseTAG }} | grep -i digest | cut -d ' ' -f 2)" >> $GITHUB_OUTPUT
-          printf 'UBUNTUbaseDIGEST=%s\n' "$(docker image pull ${{ env.UBUNTUbaseIMAGE }}:${{ env.UBUNTUbaseTAG }} | grep -i digest | cut -d ' ' -f 2)" >> $GITHUB_OUTPUT
+          printf 'pluginSngtvRevision=%s\n' "${pluginSngtvRevision}" >> $GITHUB_OUTPUT
+          printf 'pluginTvmRevision=%s\n' "${pluginTvmRevision}" >> $GITHUB_OUTPUT
+          printf 'pluginXmltvRevision=%s\n' "${pluginXmltvRevision}" >> $GITHUB_OUTPUT
+          printf 'tvsScraperVersion=%s\n' "${tvsScraperVersion}" >> $GITHUB_OUTPUT
+          printf 'DEBIANbaseDIGEST=%s\n' "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${{ env.DEBIANbaseIMAGE }}:${{ env.DEBIANbaseTAG }}")" >> $GITHUB_OUTPUT
+          printf 'UBUNTUbaseDIGEST=%s\n' "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${{ env.UBUNTUbaseIMAGE }}:${{ env.UBUNTUbaseTAG }}")" >> $GITHUB_OUTPUT
       - name: Docker Metadata - DEBIAN
         id: meta_debian
         if: ${{ (github.event.inputs.tags == 'bld_debian') || (github.event.inputs.tags == 'bld_all') || (github.event.inputs.tags == 'dry_run') }}
@@ -141,6 +150,10 @@ jobs:
           printf 'Version:\t\t%s (latest: %s)\n' "${{ steps.get_arg.outputs.vPatch }}" "${{ steps.get_arg.outputs.isLatest }}"
           printf 'epgd Dev Version:\t%s\n' "${{ steps.get_arg.outputs.epgdDevVersion }}"
           printf 'epgd Dev Revision:\t%s\n' "${{ steps.get_arg.outputs.epgdDevRevision }}"
+          printf 'Plugin sngtv Rev:\t%s\n' "${{ steps.get_arg.outputs.pluginSngtvRevision }}"
+          printf 'Plugin tvm Rev:\t\t%s\n' "${{ steps.get_arg.outputs.pluginTvmRevision }}"
+          printf 'Plugin xmltv Rev:\t%s\n' "${{ steps.get_arg.outputs.pluginXmltvRevision }}"
+          printf 'tvs-scraper Version:\t%s\n' "${{ steps.get_arg.outputs.tvsScraperVersion }}"
           printf 'debian Base Digest:\t%s\n' "${{ steps.get_arg.outputs.DEBIANbaseDIGEST }}"
           printf 'Ubuntu Base Digest:\t%s\n' "${{ steps.get_arg.outputs.UBUNTUbaseDIGEST }}"
           printf '\n<<<<<<<<< GENERATED TAGS >>>>>>>>>\n'
@@ -178,6 +191,17 @@ jobs:
             dateTime=${{ steps.get_arg.outputs.dateTime }}
             epgdRevision=${{ steps.get_arg.outputs.epgdRevision }}
             epgdVersion=${{ steps.get_arg.outputs.epgdVersion }}
+            pluginSngtvRevision=${{ steps.get_arg.outputs.pluginSngtvRevision }}
+            pluginTvmRevision=${{ steps.get_arg.outputs.pluginTvmRevision }}
+            pluginXmltvRevision=${{ steps.get_arg.outputs.pluginXmltvRevision }}
+            tvsScraperVersion=${{ steps.get_arg.outputs.tvsScraperVersion }}
+          annotations: |
+            ${{ env.commonANNOTATIONS }}
+            index,manifest:org.opencontainers.image.base.digest=${{ steps.get_arg.outputs.DEBIANbaseDIGEST }}
+            index,manifest:org.opencontainers.image.base.name=docker.io/library/${{ env.DEBIANbaseIMAGE }}:${{ env.DEBIANbaseTAG }}
+            index,manifest:org.opencontainers.image.created=${{ steps.get_arg.outputs.dateTime }}
+            index,manifest:org.opencontainers.image.revision=${{ steps.get_arg.outputs.epgdRevision }}
+            index,manifest:org.opencontainers.image.version=${{ steps.get_arg.outputs.epgdVersion }}
           no-cache: true
           push: true
           tags: ${{ steps.meta_debian.outputs.tags }}
@@ -193,6 +217,17 @@ jobs:
             dateTime=${{ steps.get_arg.outputs.dateTime }}
             epgdRevision=${{ steps.get_arg.outputs.epgdRevision }}
             epgdVersion=${{ steps.get_arg.outputs.epgdVersion }}
+            pluginSngtvRevision=${{ steps.get_arg.outputs.pluginSngtvRevision }}
+            pluginTvmRevision=${{ steps.get_arg.outputs.pluginTvmRevision }}
+            pluginXmltvRevision=${{ steps.get_arg.outputs.pluginXmltvRevision }}
+            tvsScraperVersion=${{ steps.get_arg.outputs.tvsScraperVersion }}
+          annotations: |
+            ${{ env.commonANNOTATIONS }}
+            index,manifest:org.opencontainers.image.base.digest=${{ steps.get_arg.outputs.UBUNTUbaseDIGEST }}
+            index,manifest:org.opencontainers.image.base.name=docker.io/library/${{ env.UBUNTUbaseIMAGE }}:${{ env.UBUNTUbaseTAG }}
+            index,manifest:org.opencontainers.image.created=${{ steps.get_arg.outputs.dateTime }}
+            index,manifest:org.opencontainers.image.revision=${{ steps.get_arg.outputs.epgdRevision }}
+            index,manifest:org.opencontainers.image.version=${{ steps.get_arg.outputs.epgdVersion }}
           no-cache: true
           push: true
           tags: ${{ steps.meta_ubuntu.outputs.tags }}
@@ -208,6 +243,17 @@ jobs:
             dateTime=${{ steps.get_arg.outputs.dateTime }}
             epgdRevision=${{ steps.get_arg.outputs.epgdDevRevision }}
             epgdVersion=${{ steps.get_arg.outputs.epgdDevVersion }}
+            pluginSngtvRevision=${{ steps.get_arg.outputs.pluginSngtvRevision }}
+            pluginTvmRevision=${{ steps.get_arg.outputs.pluginTvmRevision }}
+            pluginXmltvRevision=${{ steps.get_arg.outputs.pluginXmltvRevision }}
+            tvsScraperVersion=${{ steps.get_arg.outputs.tvsScraperVersion }}
+          annotations: |
+            ${{ env.commonANNOTATIONS }}
+            index,manifest:org.opencontainers.image.base.digest=${{ steps.get_arg.outputs.DEBIANbaseDIGEST }}
+            index,manifest:org.opencontainers.image.base.name=docker.io/library/${{ env.DEBIANbaseIMAGE }}:${{ env.DEBIANbaseTAG }}
+            index,manifest:org.opencontainers.image.created=${{ steps.get_arg.outputs.dateTime }}
+            index,manifest:org.opencontainers.image.revision=${{ steps.get_arg.outputs.epgdDevRevision }}
+            index,manifest:org.opencontainers.image.version=${{ steps.get_arg.outputs.epgdDevVersion }}
           no-cache: true
           push: true
           tags: ${{ steps.meta_dev.outputs.tags }}
@@ -241,6 +287,15 @@ jobs:
             </html>
           priority: low
     env:
+      commonANNOTATIONS: |-
+        index,manifest:org.opencontainers.image.authors=A. Hemmerle <github.com/lapicidae>
+        index,manifest:org.opencontainers.image.description=${{ github.event.repository.description || 'Download EPG data from the internet and manage it in a MariaDB/MySQL database' }}
+        index,manifest:org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}/blob/master/README.md
+        index,manifest:org.opencontainers.image.licenses=GPL-2.0-only AND GPL-3.0-only AND GPL-3.0-or-later
+        index,manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+        index,manifest:org.opencontainers.image.title=epgd
+        index,manifest:org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+        index,manifest:org.opencontainers.image.vendor=${{ github.repository_owner }}
       imageNAME: vdr-epg-daemon
       latestTAG: latest
       DEBIANbaseIMAGE: debian
