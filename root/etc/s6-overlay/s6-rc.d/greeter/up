@@ -1,4 +1,14 @@
 #!/command/execlineb -P
+define spaces "                                                                "
+backtick -D "unknown" -E ver {
+ pipeline { /usr/local/bin/epgd -v }
+ s6-cut -d " " -f 2-
+}
+backtick -D "0" -E len { expr "${ver}" : ".*" }
+backtick -D "0" -E lpad { expr ( 64 - ${len} ) / 2 }
+backtick -D "0" -E rpad { expr 64 - ${len} - ${lpad} }
+backtick -D "" -E lstr { pipeline { s6-echo "${spaces}" } s6-cut -c 1-${lpad} }
+backtick -D "" -E rstr { pipeline { s6-echo "${spaces}" } s6-cut -c 1-${rpad} }
 foreground { s6-echo "╔════════════════════════════════════════════════════════════════╗" }
 foreground { s6-echo "║                      _  _  ____  ____                          ║" }
 foreground { s6-echo "║                     ( \\/ )(  _ \\(  _ \\                         ║" }
@@ -8,5 +18,8 @@ foreground { s6-echo "║  ____  ____   ___    ____    __    ____  __  __  _____
 foreground { s6-echo "║ ( ___)(  _ \\ / __)  (  _ \\  /__\\  ( ___)(  \\/  )(  _  )( \\( )  ║" }
 foreground { s6-echo "║  )__)  )___/( (_-.   )(_) )/(__)\\  )__)  )    (  )(_)(  )  (   ║" }
 foreground { s6-echo "║ (____)(__)   \\___/  (____/(__)(__)(____)(_/\\/\\_)(_____)(_)\\_)  ║" }
+foreground { s6-echo "║                                                                ║" }
+foreground { s6-echo "╟────────────────────────────────────────────────────────────────╢" }
+foreground { s6-echo "║${lstr}${ver}${rstr}║" }
 foreground { s6-echo "║            https://github.com/horchi/vdr-epg-daemon            ║" }
 s6-echo "╚════════════════════════════════════════════════════════════════╝"

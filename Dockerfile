@@ -30,18 +30,19 @@ RUN /usr/bin/bash -c '/install.sh'
 
 WORKDIR /epgd
 
-LABEL org.opencontainers.image.authors=${authors} \
-      org.opencontainers.image.base.digest=${baseDIGEST} \
-      org.opencontainers.image.base.name="docker.io/${baseIMAGE}:${baseTAG}" \
-      org.opencontainers.image.created=${dateTime} \
-      org.opencontainers.image.description="Download EPG data from the internet and manage it in a maria database" \
+LABEL org.opencontainers.image.authors="${authors}" \
+      org.opencontainers.image.base.digest="${baseDIGEST}" \
+      org.opencontainers.image.base.name="docker.io/library/${baseIMAGE}:${baseTAG}" \
+      org.opencontainers.image.created="${dateTime}" \
+      org.opencontainers.image.description="Download EPG data from the internet and manage it in a MariaDB/MySQL database" \
       org.opencontainers.image.documentation="https://github.com/lapicidae/vdr-epg-daemon/blob/master/README.md" \
       org.opencontainers.image.licenses="GPL-2.0-only AND GPL-3.0-only AND GPL-3.0-or-later" \
-      org.opencontainers.image.revision=${epgdRevision} \
-      org.opencontainers.image.source="https://github.com/lapicidae/vdr-epg-daemon/" \
+      org.opencontainers.image.revision="${epgdRevision}" \
+      org.opencontainers.image.source="https://github.com/lapicidae/vdr-epg-daemon" \
       org.opencontainers.image.title="epgd" \
-      org.opencontainers.image.url="https://github.com/lapicidae/vdr-epg-daemon/blob/master/README.md" \
-      org.opencontainers.image.version=${epgdVersion}
+      org.opencontainers.image.url="https://github.com/lapicidae/vdr-epg-daemon" \
+      org.opencontainers.image.vendor="lapicidae" \
+      org.opencontainers.image.version="${epgdVersion}"
 
 EXPOSE 9999
 
