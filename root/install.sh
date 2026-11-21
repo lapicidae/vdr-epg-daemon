@@ -89,6 +89,9 @@ elif [ "$baseIMAGE" = 'debian' ]; then
         locales-all
     )
     buildPKG+=(libjpeg62-turbo-dev)
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+        sed -i 's/^Components: main$/& contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
+    fi
 else
   printf '\e[31;1;2m!!! WRONG BASE IMAGE !!!\e[m\n'
   exit 1

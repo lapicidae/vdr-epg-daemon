@@ -1,0 +1,49 @@
+#!/command/execlineb -P
+
+with-contenv
+importas -SD "true" FFMPEG
+
+case -i -- ${FFMPEG} {
+ "false" { exit 0 }
+}
+
+if -nt { eltest -x /usr/bin/ffmpeg }
+
+ elglob -0s DRIS /dev/dri/renderD*
+ backtick -D "" -n VENDORS {
+  forx -E DRI { ${DRIS} }
+  backtick -E NAME { s6-basename "${DRI}" }
+  if -t { eltest -r "/sys/class/drm/${NAME}/device/vendor" }
+   redirfd -r 0 "/sys/class/drm/${NAME}/device/vendor"
+   s6-cat
+ }
+ importas -Ss VENDORS
+ foreground {
+  ifelse { eltest -c /dev/nvidiactl }
+   { s6-echo "NVIDIA GPU detected (using host drivers via NVIDIA Container Toolkit)" }
+   if { pipeline { s6-echo ${VENDORS} } s6-grep -q "0x10de" }
+    s6-echo "NVIDIA GPU detected via /dev/dri (for NVENC/NVDEC use NVIDIA Container Toolkit instead)"
+ }
+
+ export DEBIAN_FRONTEND noninteractive
+ if -nt {
+  if { redirfd -w 1 /dev/null apt-get update -qq }
+  backtick -D "" -n PKG {
+   forx -E VENDOR { ${VENDORS} }
+   case -- "${VENDOR}" {
+    "0x8086" {
+     ifelse { redirfd -w 1 /dev/null redirfd -w 2 /dev/null apt-cache show intel-media-va-driver-non-free }
+      { s6-echo "intel-media-va-driver-non-free vainfo" }
+      s6-echo "intel-media-va-driver vainfo"
+    }
+    "0x1002" { s6-echo "mesa-va-drivers vainfo" }
+   }
+  }
+  importas -Ss PKG
+  foreground { s6-echo "Install FFmpeg" ${PKG} }
+  if { redirfd -w 1 /dev/null apt-get install -y -qq --no-install-recommends ffmpeg ${PKG} }
+  foreground { redirfd -w 1 /dev/null apt-get clean }
+  foreground { s6-rmrf /var/lib/apt/lists }
+  s6-mkdir -p /var/lib/apt/lists/partial
+ }
+  fdmove -c 1 2 s6-echo "WARN: FFmpeg installation failed"

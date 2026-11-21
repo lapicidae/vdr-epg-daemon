@@ -16,8 +16,29 @@ foreground {
   if -n { redirfd -w 2 /dev/null find / -user "${uid}" -not -path "/proc/*" -exec chown -h "${user}" {} \; }
    s6-true
 }
- if -t { eltest ${gid} -ne ${pgid} }
+foreground {
+ if { eltest ${gid} -ne ${pgid} }
   foreground { s6-echo "Change the group ID of group ${group} to ${pgid}" }
   foreground { groupmod --non-unique --gid "${pgid}" "${group}" }
-  if -nt { redirfd -w 2 /dev/null find / -group "${gid}" -not -path "/proc/*" -exec chgrp -h "${group}" {} \; }
+  if -n { redirfd -w 2 /dev/null find / -group "${gid}" -not -path "/proc/*" -exec chgrp -h "${group}" {} \; }
    s6-true
+}
+elglob -0s dri_devs "/dev/dri/renderD*"
+elglob -0s card_devs "/dev/dri/card*"
+forx -E dev { ${dri_devs} ${card_devs} }
+ backtick -E dev_gid { stat -c "%g" "${dev}" }
+ if -t { eltest "${dev_gid}" -gt 0 }
+ backtick -E user_gids { id -G "${user}" }
+ if -nt { eltest " ${user_gids} " =~ " ${dev_gid} " }
+ backtick -D "" -E grp {
+  pipeline { getent group "${dev_gid}" }
+  s6-cut -d ":" -f 1
+ }
+ backtick -E target {
+  ifelse { eltest -n "${grp}" }
+   { s6-echo "${grp}" }
+   foreground { redirfd -w 1 /dev/null groupadd -g "${dev_gid}" "dri-${dev_gid}" }
+   s6-echo "dri-${dev_gid}"
+ }
+ foreground { s6-echo "Add user ${user} to group ${target} (GID ${dev_gid})" }
+ usermod -aG "${target}" "${user}"

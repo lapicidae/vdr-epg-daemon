@@ -67,11 +67,21 @@ Compatible with docker-compose v2 schemas. Take a look at the **[sample file](do
 services:
   epgd:
     container_name: vdr-epg-daemon
+    # deploy: # optional (NVIDIA NVENC/NVDEC; requires NVIDIA Container Toolkit)
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # devices:
+    #   - /dev/dri:/dev/dri # optional (Intel/AMD VA-API hardware acceleration)
     environment:
       - LANG=de_DE.UTF-8 #other languages are currently not supported
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Berlin
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility # optional (for NVIDIA GPU)
     hostname: epgd
     image: ghcr.io/lapicidae/vdr-epg-daemon:latest
     ports:
@@ -100,9 +110,12 @@ docker run -d \
   -v /path/to/epgimages:/epgd/epgimages \
   -v /path/to/channellogos:/epgd/channellogos `#optional` \
   -v /path/to/log:/epgd/log `#optional` \
+  --device /dev/dri:/dev/dri `#optional (Intel/AMD VA-API)` \
   --restart unless-stopped \
   ghcr.io/lapicidae/vdr-epg-daemon:latest
 ```
+
+For NVIDIA GPUs (NVENC/NVDEC, requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)), replace `--device /dev/dri:/dev/dri` with `--gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`.
 
 ### Parameters
 
@@ -110,29 +123,33 @@ Container images are configured using parameters passed at runtime.
 These parameters are separated by a colon and indicate `<external>:<internal>` respectively.  
 For example, `-p 8080:80` would expose port `80` from inside the container to be accessible from the host's IP on port `8080` outside the container.
 
-|             Parameter             | Default       | Function                                                                                                                                                        |
-| :-------------------------------: | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|             `-p 9999`             | 9999          | epghttpd Webinterface                                                                                                                                           |
-|          `-e PUID=1000`           | 1000          | for UserID - see below for explanation                                                                                                                          |
-|          `-e PGID=1000`           | 1000          | for GroupID - see below for explanation                                                                                                                         |
-|       `-e TZ=Europe/London`       | Europe/London | Specify a [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List) to use (e.g. Europe/London)                                             |
-|       `-e LANG=de_DE.UTF-8`       | de_DE.UTF-8   | Default locale; see [list](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=localedata/SUPPORTED;hb=HEAD) (**only `de_DE.UTF-8` is currently supported**) |
-| `-e UPDATE_CONF_EVENTSVIEW=false` | true          | Optional - Do not keep the provided eventsview sql files up to date                                                                                             |
-|  `-e UPDATE_CONF_PLUGINS=false`   | true          | Optional - Do not keep the provided config files of the plugins up to date                                                                                      |
-|  `-e UPDATE_CONF_USEREXIT=false`  | true          | Optional - Do not keep the provided file `userexit.sql` up to date                                                                                              |
-|    `-e UPDATE_CONF_MISC=false`    | true          | Optional - Do not keep all other provided `.dat`, `.py` and `.sql` files up to date                                                                             |
-|     `-e LOGO_INTERNAL=false`      | true          | Optional - Use your own station logos in `/epgd/channellogos`                                                                                                   |
-|     `-e LOGO_OVERWRITE=false`     | true          | Optional - Do not overwrite existing logos in `/epgd/channellogos` (only relevant if internal logos are used)                                                   |
-|     `-e START_EPGHTTPD=false`     | true          | Optional - Disable webinterface (epghttpd)                                                                                                                      |
-|      `-e RESTART_EPGD=true`       | false         | Optional - Restart epgd once at 3:30 AM after the start of the container                                                                                        |
-|     `-e RESTART_EPGD_AT=3:30`     | 3:30          | Optional - Change default restart time ([examples](https://www.ibm.com/docs/en/zos/2.5.0?topic=descriptions-run-command-specified-time))                        |
-|     `-e KNOCK_EPLISTS=false`      | true          | Optional - Disable the [eplists.de](http://eplists.de) connection check                                                                                         |
-|        `-e LOG2FILE=true`         | false         | Optional - Write log to file in `/epgd/log`                                                                                                                     |
-|         `-v /epgd/config`         |               | Config files                                                                                                                                                    |
-|       `-v /epgd/epgimages`        |               | EPG images for use in other plugins (e.g. [live plugin](https://github.com/MarkusEh/vdr-plugin-live))                                                           |
-|         `-v /epgd/cache`          |               | Downloaded, temporary files                                                                                                                                     |
-|      `-v /epgd/channellogos`      |               | TV station logos used in Webinterface                                                                                                                           |
-|          `-v /epgd/log`           |               | Logfiles if `LOG2FILE=true`                                                                                                                                     |
+|                       Parameter                       | Default       | Function                                                                                                                                                        |
+| :---------------------------------------------------: | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|                       `-p 9999`                       | 9999          | epghttpd Webinterface                                                                                                                                           |
+|                    `-e PUID=1000`                     | 1000          | for UserID - see below for explanation                                                                                                                          |
+|                    `-e PGID=1000`                     | 1000          | for GroupID - see below for explanation                                                                                                                         |
+|                 `-e TZ=Europe/London`                 | Europe/London | Specify a [timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List) to use (e.g. Europe/London)                                             |
+|                 `-e LANG=de_DE.UTF-8`                 | de_DE.UTF-8   | Default locale; see [list](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=localedata/SUPPORTED;hb=HEAD) (**only `de_DE.UTF-8` is currently supported**) |
+|                   `-e FFMPEG=false`                   | true          | Optional - Disable installation of ffmpeg on first run                                                                                                          |
+|           `-e UPDATE_CONF_EVENTSVIEW=false`           | true          | Optional - Do not keep the provided eventsview sql files up to date                                                                                             |
+|            `-e UPDATE_CONF_PLUGINS=false`             | true          | Optional - Do not keep the provided config files of the plugins up to date                                                                                      |
+|            `-e UPDATE_CONF_USEREXIT=false`            | true          | Optional - Do not keep the provided file `userexit.sql` up to date                                                                                              |
+|              `-e UPDATE_CONF_MISC=false`              | true          | Optional - Do not keep all other provided `.dat`, `.py` and `.sql` files up to date                                                                             |
+|               `-e LOGO_INTERNAL=false`                | true          | Optional - Use your own station logos in `/epgd/channellogos`                                                                                                   |
+|               `-e LOGO_OVERWRITE=false`               | true          | Optional - Do not overwrite existing logos in `/epgd/channellogos` (only relevant if internal logos are used)                                                   |
+|               `-e START_EPGHTTPD=false`               | true          | Optional - Disable webinterface (epghttpd)                                                                                                                      |
+|                `-e RESTART_EPGD=true`                 | false         | Optional - Restart epgd once at 3:30 AM after the start of the container                                                                                        |
+|               `-e RESTART_EPGD_AT=3:30`               | 3:30          | Optional - Change default restart time ([examples](https://www.ibm.com/docs/en/zos/2.5.0?topic=descriptions-run-command-specified-time))                        |
+|               `-e KNOCK_EPLISTS=false`                | true          | Optional - Disable the [eplists.de](http://eplists.de) connection check                                                                                         |
+|                  `-e LOG2FILE=true`                   | false         | Optional - Write log to file in `/epgd/log`                                                                                                                     |
+|                   `-v /epgd/config`                   |               | Config files                                                                                                                                                    |
+|                 `-v /epgd/epgimages`                  |               | EPG images for use in other plugins (e.g. [live plugin](https://github.com/MarkusEh/vdr-plugin-live))                                                           |
+|                   `-v /epgd/cache`                    |               | Downloaded, temporary files                                                                                                                                     |
+|                `-v /epgd/channellogos`                |               | TV station logos used in Webinterface                                                                                                                           |
+|                    `-v /epgd/log`                     |               | Logfiles if `LOG2FILE=true`                                                                                                                                     |
+|             `--device /dev/dri:/dev/dri`              |               | Optional - Pass through GPU devices for Intel/AMD VA-API hardware acceleration                                                                                  |
+|                     `--gpus all`                      |               | Optional - Pass through NVIDIA GPU for NVENC/NVDEC (requires NVIDIA Container Toolkit)                                                                          |
+| `-e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` |               | Optional - Expose NVIDIA video encode/decode libraries when using `--gpus`                                                                                      |
 
 ### User / Group Identifiers
 

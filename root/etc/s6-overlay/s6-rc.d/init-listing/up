@@ -2,43 +2,40 @@
 with-contenv
 define user epgd
 define group epgd
-foreground { s6-echo "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄⚟ Settings ⚞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄" }
-foreground {
- pipeline { id -u ${user} }
- pipeline { sed "s/$/ ${user}/" }
- xargs printf "%-26s%s (%s)\n" "User ID:"
-}
-foreground {
+backtick -E uid { id -u ${user} }
+backtick -E gid {
  pipeline { getent group ${group} }
- pipeline { s6-cut -d ":" -f 3 }
- pipeline { sed "s/$/ ${group}/" }
- xargs printf "%-26s%s (%s)\n" "Group ID:"
+ s6-cut -d ":" -f 3
 }
-foreground { pipeline { printcontenv LANG } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Lang:" }
-foreground { pipeline { printcontenv LANGUAGE } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Language:" }
-foreground { pipeline { realpath --relative-to /usr/share/zoneinfo /etc/localtime } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Timezone:" }
+backtick -E -D "NONE" tz { realpath --relative-to /usr/share/zoneinfo /etc/localtime }
+importas -D "" lang LANG
+importas -D "" language LANGUAGE
+
+foreground { s6-echo "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄⚟ Settings ⚞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄" }
 foreground {
- if { eltest -v LOGO_INTERNAL }
-  pipeline { printcontenv LOGO_INTERNAL } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Internal logos:"
-}
-foreground {
- if { eltest -v LOGO_OVERWRITE }
-  pipeline { printcontenv LOGO_OVERWRITE } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Overwrite existing logos:"
+ printf "%-26s%s (%s)\\n"
+  "User ID:"  "${uid}"  "${user}"
+  "Group ID:" "${gid}"  "${group}"
 }
 foreground {
- if { eltest -v START_EPGHTTPD }
-  pipeline { printcontenv START_EPGHTTPD } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Enable webinterface:"
+ printf "%-26s%s\\n"
+  "Lang:"     "${lang}"
+  "Language:" "${language}"
+  "Timezone:" "${tz}"
 }
 foreground {
- if { eltest -v RESTART_EPGD }
-  pipeline { printcontenv RESTART_EPGD } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Restart EPGd:"
-}
-foreground {
- if { eltest -v RESTART_EPGD_AT }
-  pipeline { printcontenv RESTART_EPGD_AT } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Restart EPGd at:"
-}
-foreground {
- if { eltest -v LOG2FILE }
-  pipeline { printcontenv LOG2FILE } pipeline { s6-quote-filter } xargs printf "%-26s%s\n" "Log2File:"
+ forx -E entry {
+  "FFMPEG=FFmpeg support:"
+  "LOGO_INTERNAL=Internal logos:"
+  "LOGO_OVERWRITE=Overwrite existing logos:"
+  "START_EPGHTTPD=Enable webinterface:"
+  "RESTART_EPGD=Restart EPGd:"
+  "RESTART_EPGD_AT=Restart EPGd at:"
+  "LOG2FILE=Log2File:"
+ }
+ multidefine -d "=" "${entry}" { var label }
+ if -t { eltest -v "${var}" }
+  importas -D "" val "${var}"
+  printf "%-26s%s\\n" "${label}" "${val}"
 }
 s6-echo "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"

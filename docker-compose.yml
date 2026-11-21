@@ -13,11 +13,19 @@ services:
       resources:
         limits:
           cpus: '0.50'    # limit CPU usage to 50% of one core (optional)
+        # reservations:   # optional (NVIDIA NVENC/NVDEC; requires NVIDIA Container Toolkit)
+        #   devices:
+        #     - driver: nvidia
+        #       count: 1
+        #       capabilities: [gpu]
+    # devices:
+    #   - /dev/dri:/dev/dri # optional (Intel/AMD VA-API hardware acceleration)
     environment:
       - LANG=de_DE.UTF-8
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Berlin
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility # optional (for NVIDIA GPU)
     hostname: epgd
     image: ghcr.io/lapicidae/vdr-epg-daemon:latest
     labels:
