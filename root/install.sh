@@ -353,18 +353,32 @@ phase_all() {
     fi
 }
 
+_usage() {
+    cat <<EOF
+Usage: $0 [phase]
+
+Phases:
+  all (default)     Run all phases for single-stage / VM install
+  s6                Unpack and patch s6-overlay & syslogd-overlay
+  build-deps        Install build packages
+  logos             Clone and package svg-channellogos
+  build             Compile and strip epgd + plugins
+  scraper           Fetch tvs-scraper and its configs
+  runtime           Install runtime packages, locale, users and symlinks
+  -h, --help, help  Show this help
+EOF
+}
+
 case "${1:-}" in
-    ""|all)     phase_all ;;
-    s6)         phase_s6 ;;
-    build-deps) phase_build_deps ;;
-    logos)      phase_logos ;;
-    build)      phase_build ;;
-    scraper)    phase_scraper ;;
-    runtime)    phase_runtime ;;
-    *)
-        printf 'Usage: %s {all|s6|build-deps|logos|build|scraper|runtime}\n' "$0" >&2
-        exit 1
-        ;;
+    ""|all)         phase_all ;;
+    s6)             phase_s6 ;;
+    build-deps)     phase_build_deps ;;
+    logos)          phase_logos ;;
+    build)          phase_build ;;
+    scraper)        phase_scraper ;;
+    runtime)        phase_runtime ;;
+    -h|--help|help) _usage; exit 0 ;;
+    *)              _usage >&2; exit 1 ;;
 esac
 
 _ntfy "all done (${1:-all})"

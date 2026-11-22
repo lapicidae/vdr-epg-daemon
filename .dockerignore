@@ -1,2 +1,4 @@
-root/usr/local/bin/README.md
-root/usr/local/bin/README.de.md
+*
+!root/
+!root/**
+root/usr/local/bin/README*.md
