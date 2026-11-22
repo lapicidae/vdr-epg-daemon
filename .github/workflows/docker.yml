@@ -26,6 +26,11 @@ on:
         required: false
       trigger:
         type: string
+      no_cache:
+        description: 'Build without cache'
+        type: boolean
+        required: false
+        default: false
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -202,7 +207,9 @@ jobs:
             index,manifest:org.opencontainers.image.created=${{ steps.get_arg.outputs.dateTime }}
             index,manifest:org.opencontainers.image.revision=${{ steps.get_arg.outputs.epgdRevision }}
             index,manifest:org.opencontainers.image.version=${{ steps.get_arg.outputs.epgdVersion }}
-          no-cache: true
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:debian
+          cache-to: type=inline
+          no-cache: ${{ github.event.inputs.no_cache == 'true' }}
           push: true
           tags: ${{ steps.meta_debian.outputs.tags }}
       - name: Build and push - UBUNTU
@@ -228,7 +235,9 @@ jobs:
             index,manifest:org.opencontainers.image.created=${{ steps.get_arg.outputs.dateTime }}
             index,manifest:org.opencontainers.image.revision=${{ steps.get_arg.outputs.epgdRevision }}
             index,manifest:org.opencontainers.image.version=${{ steps.get_arg.outputs.epgdVersion }}
-          no-cache: true
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:ubuntu
+          cache-to: type=inline
+          no-cache: ${{ github.event.inputs.no_cache == 'true' }}
           push: true
           tags: ${{ steps.meta_ubuntu.outputs.tags }}
       - name: Build and push - DEV
@@ -254,7 +263,11 @@ jobs:
             index,manifest:org.opencontainers.image.created=${{ steps.get_arg.outputs.dateTime }}
             index,manifest:org.opencontainers.image.revision=${{ steps.get_arg.outputs.epgdDevRevision }}
             index,manifest:org.opencontainers.image.version=${{ steps.get_arg.outputs.epgdDevVersion }}
-          no-cache: true
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository }}:dev
+            type=registry,ref=ghcr.io/${{ github.repository }}:debian
+          cache-to: type=inline
+          no-cache: ${{ github.event.inputs.no_cache == 'true' }}
           push: true
           tags: ${{ steps.meta_dev.outputs.tags }}
       - name: Send mail
