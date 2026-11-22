@@ -9,7 +9,7 @@
     MOVIEID              ""                                                   movieid              Ascii       20 Data,
     MODERATOR            ""                                                   moderator            Ascii      250 Data,
     OTHER                ""                                                   other                Text      2000 Data,
-@@ -432,7 +432,7 @@
+@@ -433,7 +433,7 @@
     TIPP                    ""                                               sub_tipp                      Ascii    250 Data,
     RATING                  ""                                               sub_rating                    Ascii    250 Data,
     NUMRATING               ""                                               sub_numrating                 Int        2 Data,
@@ -18,7 +18,7 @@
     TOPIC                   ""                                               sub_topic                     Ascii   1000 Data,
     LONGDESCRIPTION         ""                                               sub_longdescription           MText  25000 Data,
     COMPLONGDESCRIPTION     ""                                               sub_complongdescription       MText  25000 Data,
-@@ -541,7 +541,7 @@
+@@ -542,7 +542,7 @@
     YEAR                 ""                        year            Ascii       10 Data,
     RATING               ""                        rating          Ascii      250 Data,
     NUMRATING            ""                        numrating       Int          2 Data,
